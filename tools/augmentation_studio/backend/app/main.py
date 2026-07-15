@@ -81,6 +81,14 @@ class CvPreviewRequest(BaseModel):
     roi: Dict[str, int] = Field(default_factory=dict)
 
 
+class LineFollowerPreviewRequest(BaseModel):
+    path: str
+    indexes: List[int]
+    cv_preprocess: List[str] = Field(default_factory=list)
+    roi: Dict[str, int] = Field(default_factory=dict)
+    line_follower: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ExportRequest(BaseModel):
     augmentations: List[AugEntry] = Field(default_factory=list)
     transformations: Optional[List[str]] = None
@@ -93,6 +101,7 @@ class ExportRequest(BaseModel):
     cv_preprocess: Optional[List[str]] = None
     cv_debug_transformations: Optional[List[str]] = None
     cv_params: Optional[Dict[str, Any]] = None
+    line_follower: Optional[Dict[str, Any]] = None
 
 
 class ConfigApplyRequest(BaseModel):
@@ -108,6 +117,7 @@ class ConfigApplyRequest(BaseModel):
     cv_preprocess: Optional[List[str]] = None
     cv_debug_transformations: Optional[List[str]] = None
     cv_params: Optional[Dict[str, Any]] = None
+    line_follower: Optional[Dict[str, Any]] = None
 
 
 class ConfigImportRequest(BaseModel):
@@ -343,6 +353,44 @@ def cv_preview(body: CvPreviewRequest):
     }
 
 
+@app.post('/api/cv/linefollower/preview')
+def linefollower_preview(body: LineFollowerPreviewRequest):
+    if not body.indexes:
+        raise HTTPException(status_code=400, detail='indexes must be non-empty')
+    try:
+        results = cv_config.preview_line_follower_indexes(
+            body.path,
+            body.indexes,
+            cv_preprocess=body.cv_preprocess,
+            roi=body.roi,
+            line_follower=body.line_follower,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except (FileNotFoundError, KeyError) as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {
+        'results': [{
+            'index': result['index'],
+            'original_b64': _arr_to_b64(result['original']),
+            'preprocessed_b64': _arr_to_b64(result['preprocessed']),
+            'overlay_b64': _arr_to_b64(result['overlay']),
+            'max_yellow': result['max_yellow'],
+            'confidence': result['confidence'],
+            'steering': result['steering'],
+            'throttle': result['throttle'],
+            'scan_y': result['scan_y'],
+            'scan_height': result['scan_height'],
+            'target_pixel': result['target_pixel'],
+            'line_detected': result['line_detected'],
+            'width': result['width'],
+            'height': result['height'],
+        } for result in results],
+    }
+
+
 @app.post('/api/export')
 def export_config(body: ExportRequest):
     try:
@@ -355,7 +403,8 @@ def export_config(body: ExportRequest):
                 or body.profile == 'cv_control'
                 or body.cv_preprocess is not None
                 or body.cv_debug_transformations is not None
-                or body.cv_params is not None):
+                or body.cv_params is not None
+                or body.line_follower is not None):
             snippet = export_mod.export_full_snippet(
                 augmentations=augs,
                 transformations=body.transformations,
@@ -368,6 +417,7 @@ def export_config(body: ExportRequest):
                 cv_preprocess=body.cv_preprocess,
                 cv_debug_transformations=body.cv_debug_transformations,
                 cv_params=body.cv_params,
+                line_follower=body.line_follower,
             )
         else:
             snippet = export_mod.export_snippet(augs)
@@ -395,6 +445,7 @@ def config_apply(body: ConfigApplyRequest):
             cv_preprocess=body.cv_preprocess,
             cv_debug_transformations=body.cv_debug_transformations,
             cv_params=body.cv_params,
+            line_follower=body.line_follower,
         )
         if not built['settings'] and not built['raw_blocks']:
             raise HTTPException(

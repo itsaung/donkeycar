@@ -16,6 +16,10 @@
             <button type="button" id="record_button" class="btn btn-info" >
               Start (R)ecording
             </button>
+            <button type="button" id="review_button" class="btn btn-default">
+              Review recent
+            </button>
+            <span id="record_count_label" class="text-muted" style="margin-left:0.5em;"></span>
         </form>
 
         <!-- programmable buttons -->
@@ -120,6 +124,37 @@
     </div>
   </footer>
 
+  <!-- Review recent recording drawer -->
+  <div id="review_drawer" class="review-drawer" aria-hidden="true">
+    <div class="review-drawer-header">
+      <div>
+        <strong>Review recent recording</strong>
+        <span id="review_status" class="text-muted" style="margin-left:0.75em;"></span>
+      </div>
+      <div class="review-drawer-controls">
+        <label class="group-label" style="display:inline;margin-right:0.5em;">Last</label>
+        <select id="review_n_select" class="form-control" style="display:inline;">
+          <option value="50">50 frames</option>
+          <option value="100" selected>100 frames</option>
+          <option value="200">200 frames</option>
+          <option value="500">500 frames</option>
+        </select>
+        <button type="button" id="review_refresh" class="btn btn-default btn-sm">Refresh</button>
+        <button type="button" id="review_select_all" class="btn btn-default btn-sm">Select all</button>
+        <button type="button" id="review_clear" class="btn btn-default btn-sm">Clear</button>
+        <button type="button" id="review_delete" class="btn btn-danger btn-sm" disabled>Delete selected</button>
+        <button type="button" id="review_close" class="btn btn-primary btn-sm">Close</button>
+      </div>
+    </div>
+    <div class="review-drawer-body">
+      <div id="review_preview" class="review-preview">
+        <img id="review_preview_img" alt="Selected frame preview" />
+        <div id="review_preview_meta" class="review-preview-meta"></div>
+      </div>
+      <div id="review_grid" class="review-grid"></div>
+    </div>
+  </div>
+
   <!-- Modal -->
   <div class="modal fade" id="aboutControlModes" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
     <div class="modal-dialog" role="document">
@@ -156,6 +191,12 @@
           <p>
             <strong>Recording</strong> can be toggled using the keyboard.
             <ul><li>Toggle <b>R</b>ecording: <code>R</code></li></ul>
+          </p>
+          <p>
+            <strong>Review recent</strong> opens a drawer of the last N recorded frames.
+            Click frames to select them, then delete bad data without leaving the drive page.
+            Deleting soft-marks records in the tub (same as <code>donkey ui</code>); they can be restored later.
+          </p>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-primary" data-dismiss="modal">Close</button>

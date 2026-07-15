@@ -21,6 +21,7 @@ var driveHandler = new function() {
         'controlMode': 'joystick',
         'maxThrottle' : 1,
         'throttleMode' : 'user',
+        'num_records': 0,
         'buttons': {
             "w1": false,  // boolean; true is 'down' or pushed, false is 'up' or not pushed
             "w2": false,
@@ -28,6 +29,16 @@ var driveHandler = new function() {
             "w4": false,
             "w5": false,
         }
+    }
+
+    var reviewState = {
+        open: false,
+        records: [],
+        selected: {},  // index -> true
+        activeIndex: null,
+        loading: false,
+        total: 0,
+        tubPath: null,
     }
 
     var joystick_options = {}
@@ -188,6 +199,35 @@ var driveHandler = new function() {
         state.buttons[$(this).attr('id')] = false;
         postDrive(["buttons"]); // write it back to the server
       });
+
+      // Review recent recording drawer
+      $('#review_button').click(function() {
+        openReviewDrawer();
+      });
+      $('#review_close').click(function() {
+        closeReviewDrawer();
+      });
+      $('#review_refresh').click(function() {
+        loadRecentRecords();
+      });
+      $('#review_n_select').on('change', function() {
+        loadRecentRecords();
+      });
+      $('#review_select_all').click(function() {
+        reviewState.records.forEach(function(r) {
+          reviewState.selected[r.index] = true;
+        });
+        renderReviewGrid();
+        updateReviewControls();
+      });
+      $('#review_clear').click(function() {
+        reviewState.selected = {};
+        renderReviewGrid();
+        updateReviewControls();
+      });
+      $('#review_delete').click(function() {
+        deleteSelectedRecords();
+      });
     };
 
 
@@ -268,6 +308,12 @@ var driveHandler = new function() {
           .html('Start Recording (r)')
           .removeClass('btn-warning')
           .addClass('btn-info').end()
+      }
+
+      if (state.num_records) {
+        $('#record_count_label').text(state.num_records + ' records');
+      } else {
+        $('#record_count_label').text('');
       }
 
       if (state.brakeOn) {
@@ -563,6 +609,219 @@ var driveHandler = new function() {
 
       return limitedThrottle;
     }
+
+    var selectedCount = function() {
+      return Object.keys(reviewState.selected).filter(function(k) {
+        return reviewState.selected[k];
+      }).length;
+    };
+
+    var openReviewDrawer = function() {
+      // Pause recording so deletes don't race the writer
+      if (state.recording) {
+        state.recording = false;
+        postDrive(['recording']);
+        updateUI();
+      }
+      reviewState.open = true;
+      $('#review_drawer').addClass('open').attr('aria-hidden', 'false');
+      $('body').addClass('review-open');
+      loadRecentRecords();
+    };
+
+    var closeReviewDrawer = function() {
+      reviewState.open = false;
+      $('#review_drawer').removeClass('open').attr('aria-hidden', 'true');
+      $('body').removeClass('review-open');
+    };
+
+    var updateReviewControls = function() {
+      var n = selectedCount();
+      $('#review_delete').prop('disabled', n === 0 || reviewState.loading);
+      var status = '';
+      if (reviewState.tubPath) {
+        status = reviewState.records.length + ' shown / ' + reviewState.total + ' in tub';
+        if (n > 0) {
+          status += ' · ' + n + ' selected';
+        }
+      } else if (!reviewState.loading) {
+        status = 'No tub attached — record some data first';
+      }
+      if (reviewState.loading) {
+        status = 'Loading…';
+      }
+      $('#review_status').text(status);
+    };
+
+    var setReviewPreview = function(rec) {
+      if (!rec) {
+        $('#review_preview_img').attr('src', '');
+        $('#review_preview_meta').text('Select a frame to preview');
+        return;
+      }
+      reviewState.activeIndex = rec.index;
+      $('#review_preview_img').attr('src', '/api/tub/image/' + rec.index + '?t=' + Date.now());
+      $('#review_preview_meta').html(
+        '<div>index: <b>' + rec.index + '</b></div>' +
+        '<div>angle: ' + Number(rec.angle).toFixed(3) + '</div>' +
+        '<div>throttle: ' + Number(rec.throttle).toFixed(3) + '</div>'
+      );
+      $('#review_grid .review-thumb').removeClass('active');
+      $('#review_grid .review-thumb[data-index="' + rec.index + '"]').addClass('active');
+    };
+
+    var renderReviewGrid = function() {
+      var $grid = $('#review_grid');
+      $grid.empty();
+      if (!reviewState.records.length) {
+        $grid.html('<div class="review-empty">No recent records to show. Drive and record, then refresh.</div>');
+        setReviewPreview(null);
+        updateReviewControls();
+        return;
+      }
+
+      reviewState.records.forEach(function(rec) {
+        var selected = !!reviewState.selected[rec.index];
+        var $btn = $('<button type="button" class="review-thumb"></button>');
+        $btn.attr('data-index', rec.index);
+        if (selected) {
+          $btn.addClass('selected');
+        }
+        if (reviewState.activeIndex === rec.index) {
+          $btn.addClass('active');
+        }
+        $btn.append($('<img>').attr('src', '/api/tub/image/' + rec.index).attr('alt', '#' + rec.index));
+        $btn.append($('<span class="idx"></span>').text(rec.index));
+        $grid.append($btn);
+      });
+
+      if (reviewState.activeIndex == null) {
+        setReviewPreview(reviewState.records[reviewState.records.length - 1]);
+      } else {
+        var stillThere = reviewState.records.some(function(r) {
+          return r.index === reviewState.activeIndex;
+        });
+        if (!stillThere) {
+          setReviewPreview(reviewState.records[reviewState.records.length - 1]);
+        } else {
+          // refresh active highlight without reloading preview image
+          $('#review_grid .review-thumb').removeClass('active');
+          $('#review_grid .review-thumb[data-index="' + reviewState.activeIndex + '"]').addClass('active');
+        }
+      }
+      updateReviewControls();
+    };
+
+    // Event delegation so selection toggles don't rebuild/reload images
+    $(document).on('click', '#review_grid .review-thumb', function(e) {
+      var index = parseInt($(this).attr('data-index'), 10);
+      var rec = null;
+      for (var i = 0; i < reviewState.records.length; i++) {
+        if (reviewState.records[i].index === index) {
+          rec = reviewState.records[i];
+          break;
+        }
+      }
+      if (!rec) {
+        return;
+      }
+      if (reviewState.selected[index]) {
+        delete reviewState.selected[index];
+        $(this).removeClass('selected');
+      } else {
+        reviewState.selected[index] = true;
+        $(this).addClass('selected');
+      }
+      setReviewPreview(rec);
+      updateReviewControls();
+    });
+
+    var loadRecentRecords = function() {
+      var n = parseInt($('#review_n_select').val(), 10) || 100;
+      reviewState.loading = true;
+      updateReviewControls();
+      $.getJSON('/api/tub/recent?n=' + n)
+        .done(function(data) {
+          reviewState.loading = false;
+          if (!data || !data.ok) {
+            reviewState.records = [];
+            reviewState.total = 0;
+            reviewState.tubPath = null;
+            $('#review_status').text((data && data.error) || 'Failed to load records');
+            renderReviewGrid();
+            return;
+          }
+          reviewState.records = data.records || [];
+          reviewState.total = data.total || 0;
+          reviewState.tubPath = data.tub_path;
+          // Drop selections that no longer exist
+          var alive = {};
+          reviewState.records.forEach(function(r) { alive[r.index] = true; });
+          Object.keys(reviewState.selected).forEach(function(k) {
+            if (!alive[k]) {
+              delete reviewState.selected[k];
+            }
+          });
+          if (typeof data.total === 'number' && data.total > 0) {
+            state.num_records = data.total;
+            updateUI();
+          }
+          renderReviewGrid();
+        })
+        .fail(function(xhr) {
+          reviewState.loading = false;
+          reviewState.records = [];
+          $('#review_status').text('Failed to load: ' + (xhr.responseText || xhr.status));
+          renderReviewGrid();
+        });
+    };
+
+    var deleteSelectedRecords = function() {
+      var indexes = Object.keys(reviewState.selected)
+        .filter(function(k) { return reviewState.selected[k]; })
+        .map(function(k) { return parseInt(k, 10); });
+      if (!indexes.length) {
+        return;
+      }
+      if (!window.confirm('Delete ' + indexes.length + ' selected record(s)? This marks them deleted in the tub (can be restored later via donkey ui).')) {
+        return;
+      }
+      reviewState.loading = true;
+      updateReviewControls();
+      $.ajax({
+        type: 'POST',
+        url: '/api/tub/delete',
+        contentType: 'application/json',
+        dataType: 'json',
+        data: JSON.stringify({ indexes: indexes }),
+      })
+        .done(function(data) {
+          reviewState.loading = false;
+          if (!data || !data.ok) {
+            alert((data && data.error) || 'Delete failed');
+            updateReviewControls();
+            return;
+          }
+          reviewState.selected = {};
+          if (typeof data.total === 'number') {
+            state.num_records = data.total;
+            updateUI();
+          }
+          loadRecentRecords();
+        })
+        .fail(function(xhr) {
+          reviewState.loading = false;
+          var msg = 'Delete failed';
+          try {
+            var parsed = JSON.parse(xhr.responseText);
+            if (parsed && parsed.error) {
+              msg = parsed.error;
+            }
+          } catch (e) {}
+          alert(msg);
+          updateReviewControls();
+        });
+    };
 
 
     // var drawLine = function(angle, throttle) {

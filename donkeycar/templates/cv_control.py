@@ -66,7 +66,7 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
     # - it will optionally add any configured 'joystick' controller
     #
     has_input_controller = hasattr(cfg, "CONTROLLER_TYPE") and cfg.CONTROLLER_TYPE != "mock"
-    ctr = add_user_controller(V, cfg, use_joystick, input_image = 'ui/image_array')
+    ctr, web_ctr = add_user_controller(V, cfg, use_joystick, input_image = 'ui/image_array')
 
     #
     # explode the web buttons into their own key/values in memory
@@ -238,6 +238,7 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
         print("You can now go to http://localhost:%d to drive your car." % cfg.WEB_CONTROL_PORT)
     else:
         print("You can now go to <your hostname.local>:%d to drive your car." % cfg.WEB_CONTROL_PORT)
+    web_ctr.set_tub(tub_writer.tub)
     if has_input_controller:
         print("You can now move your controller to drive your car.")
         if isinstance(ctr, JoystickController):

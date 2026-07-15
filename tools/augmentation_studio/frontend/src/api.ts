@@ -59,6 +59,23 @@ export type CvPreviewResult = {
   height: number
 }
 
+export type LineFollowerPreviewResult = {
+  index: number
+  original_b64: string
+  preprocessed_b64: string
+  overlay_b64: string
+  max_yellow: number
+  confidence: number
+  steering: number
+  throttle: number
+  scan_y: number
+  scan_height: number
+  target_pixel: number
+  line_detected: boolean
+  width: number
+  height: number
+}
+
 export type CvParams = {
   CANNY_LOW_THRESHOLD: number
   CANNY_HIGH_THRESHOLD: number
@@ -69,11 +86,31 @@ export type CvParams = {
   CV_SHOW_DEBUG_PIPELINE: boolean
 }
 
+export type HsvTuple = [number, number, number]
+
+export type LineFollowerParams = {
+  SCAN_Y: number
+  SCAN_HEIGHT: number
+  COLOR_THRESHOLD_LOW: HsvTuple
+  COLOR_THRESHOLD_HIGH: HsvTuple
+  TARGET_PIXEL: number | null
+  TARGET_THRESHOLD: number
+  CONFIDENCE_THRESHOLD: number
+  THROTTLE_MAX: number
+  THROTTLE_MIN: number
+  THROTTLE_INITIAL: number
+  THROTTLE_STEP: number
+  PID_P: number
+  PID_I: number
+  PID_D: number
+}
+
 export type ImportedCvConfig = {
   path: string
   cv_preprocess: string[]
   cv_debug_transformations: string[]
   cv_params: CvParams
+  line_follower: LineFollowerParams
   roi: RoiState
   mask_metadata_path?: string | null
   mask_preset?: string | null
@@ -233,6 +270,19 @@ export const api = {
     roi: RoiState
   }) =>
     request<{ results: CvPreviewResult[] }>('/api/cv/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  previewLineFollower: (body: {
+    path: string
+    indexes: number[]
+    cv_preprocess: string[]
+    roi: RoiState
+    line_follower: LineFollowerParams
+  }) =>
+    request<{ results: LineFollowerPreviewResult[] }>('/api/cv/linefollower/preview', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

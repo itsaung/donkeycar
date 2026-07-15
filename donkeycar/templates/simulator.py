@@ -414,6 +414,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
             print("You can now go to http://localhost:%d to drive your car." % cfg.WEB_CONTROL_PORT)
         else:
             print("You can now go to <your hostname.local>:%d to drive your car." % cfg.WEB_CONTROL_PORT)
+        ctr.set_tub(tub_writer.tub)
     elif isinstance(ctr, JoystickController):
         print("You can now move your joystick to drive your car.")
         ctr.set_tub(tub_writer.tub)

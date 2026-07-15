@@ -19,8 +19,8 @@ def _format_value(value: Any) -> str:
     if isinstance(value, str):
         return repr(value)
     if isinstance(value, (list, tuple)):
-        if isinstance(value, list) and len(value) == 2:
-            return f'({value[0]}, {value[1]})'
+        if isinstance(value, list) and len(value) in (2, 3):
+            return f'({", ".join(str(v) for v in value)})'
         if isinstance(value, tuple):
             if len(value) == 1:
                 return f'({value[0]},)'
@@ -84,12 +84,14 @@ def _cv_control_settings(
     cv_debug_transformations: List[str],
     cv_params: Dict[str, Any],
     roi: Dict[str, Any],
+    line_follower: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     cfg = cv_config.build_cv_config(
         cv_preprocess=cv_preprocess,
         cv_debug_transformations=cv_debug_transformations,
         cv_params=cv_params,
         roi=roi,
+        line_follower=line_follower,
     )
     settings = {
         'CV_PREPROCESS': repr(list(cfg.CV_PREPROCESS)),
@@ -102,6 +104,9 @@ def _cv_control_settings(
     for key in sorted(roi):
         if key.startswith('ROI_'):
             settings[key] = str(int(getattr(cfg, key)))
+    if line_follower is not None:
+        for key in cv_config.LINE_FOLLOWER_KEYS:
+            settings[key] = _format_value(getattr(cfg, key))
     return settings
 
 
@@ -110,10 +115,15 @@ def export_cv_control_snippet(
     cv_debug_transformations: List[str],
     cv_params: Dict[str, Any],
     roi: Dict[str, Any],
+    line_follower: Optional[Dict[str, Any]] = None,
 ) -> str:
     lines = ['# --- LOK: cv_control ---']
     for key, value in _cv_control_settings(
-        cv_preprocess, cv_debug_transformations, cv_params, roi
+        cv_preprocess,
+        cv_debug_transformations,
+        cv_params,
+        roi,
+        line_follower=line_follower,
     ).items():
         lines.append(f'{key} = {value}')
     lines.append('')
@@ -170,6 +180,7 @@ def build_full_settings(
     cv_preprocess: Optional[List[str]] = None,
     cv_debug_transformations: Optional[List[str]] = None,
     cv_params: Optional[Dict[str, Any]] = None,
+    line_follower: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Same inputs as export_full_snippet, but returns structured output for
     the myconfig writer: {settings: key -> formatted value, raw_blocks: [...]}
@@ -190,6 +201,7 @@ def build_full_settings(
             ),
             cv_params or {},
             roi or {},
+            line_follower=line_follower,
         ))
     elif transformations is not None or post_transformations is not None or roi:
         settings.update(_transform_settings(
@@ -242,6 +254,7 @@ def export_full_snippet(
     cv_preprocess: Optional[List[str]] = None,
     cv_debug_transformations: Optional[List[str]] = None,
     cv_params: Optional[Dict[str, Any]] = None,
+    line_follower: Optional[Dict[str, Any]] = None,
 ) -> str:
     if profile not in ('training', 'cv_control'):
         raise ValueError(f'Unknown export profile: {profile}')
@@ -256,6 +269,7 @@ def export_full_snippet(
             cv_preprocess=cv_preprocess,
             cv_debug_transformations=cv_debug_transformations,
             cv_params=cv_params,
+            line_follower=line_follower,
         )
         lines = ['# --- LOK: cv_control ---']
         lines.extend(

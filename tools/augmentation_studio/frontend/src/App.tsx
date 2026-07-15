@@ -5,6 +5,8 @@ import {
   type AugmentationSpec,
   type CvParams,
   type CvPreviewResult,
+  type LineFollowerParams,
+  type LineFollowerPreviewResult,
   type MaskData,
   type PreviewResult,
   type ReplayOptions,
@@ -17,6 +19,7 @@ import AugmentTab from './components/tabs/AugmentTab'
 import CropTab from './components/tabs/CropTab'
 import CurateTab from './components/tabs/CurateTab'
 import DebugTab from './components/tabs/DebugTab'
+import LineFollowerLabTab from './components/tabs/LineFollowerLabTab'
 import MaskTab from './components/tabs/MaskTab'
 import ReplayTab from './components/tabs/ReplayTab'
 import { MYCONFIG_STORAGE_KEY } from './components/ExportPanel'
@@ -24,7 +27,7 @@ import { MYCONFIG_STORAGE_KEY } from './components/ExportPanel'
 const PAGE_SIZE = 48
 const PREVIEW_DEBOUNCE_MS = 200
 
-type TabId = 'augment' | 'crop' | 'debug' | 'curate' | 'mask' | 'replay'
+type TabId = 'augment' | 'crop' | 'debug' | 'linefollow' | 'curate' | 'mask' | 'replay'
 type ExportProfile = 'cv_control' | 'training'
 
 function useDebouncedEffect(effect: () => void | (() => void), deps: unknown[], delay: number) {
@@ -64,6 +67,35 @@ const DEFAULT_CV_PARAMS: CvParams = {
   CV_SHOW_DEBUG_PIPELINE: false,
 }
 
+const DEFAULT_LINE_FOLLOWER: LineFollowerParams = {
+  SCAN_Y: 100,
+  SCAN_HEIGHT: 20,
+  COLOR_THRESHOLD_LOW: [0, 50, 50],
+  COLOR_THRESHOLD_HIGH: [50, 255, 255],
+  TARGET_PIXEL: null,
+  TARGET_THRESHOLD: 10,
+  CONFIDENCE_THRESHOLD: 0.0015,
+  THROTTLE_MAX: 0.3,
+  THROTTLE_MIN: 0.15,
+  THROTTLE_INITIAL: 0.15,
+  THROTTLE_STEP: 0.05,
+  PID_P: -0.01,
+  PID_I: 0.0,
+  PID_D: -0.0001,
+}
+
+function normalizeLineFollower(value: Partial<LineFollowerParams> | null | undefined): LineFollowerParams {
+  const merged = { ...DEFAULT_LINE_FOLLOWER, ...(value ?? {}) }
+  const low = merged.COLOR_THRESHOLD_LOW
+  const high = merged.COLOR_THRESHOLD_HIGH
+  return {
+    ...merged,
+    COLOR_THRESHOLD_LOW: [Number(low[0]), Number(low[1]), Number(low[2])],
+    COLOR_THRESHOLD_HIGH: [Number(high[0]), Number(high[1]), Number(high[2])],
+    THROTTLE_INITIAL: merged.THROTTLE_INITIAL ?? merged.THROTTLE_MIN,
+  }
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabId>('augment')
   const [exportProfile, setExportProfile] = useState<ExportProfile>('cv_control')
@@ -92,6 +124,7 @@ export default function App() {
     'CANNY',
   ])
   const [cvParams, setCvParams] = useState<CvParams>(DEFAULT_CV_PARAMS)
+  const [lineFollower, setLineFollower] = useState<LineFollowerParams>(DEFAULT_LINE_FOLLOWER)
   const [myconfigPath, setMyconfigPath] = useState(
     () => localStorage.getItem(MYCONFIG_STORAGE_KEY) ?? '~/mycar/myconfig.py',
   )
@@ -108,6 +141,8 @@ export default function App() {
 
   const [preview, setPreview] = useState<PreviewResult | null>(null)
   const [cvPreview, setCvPreview] = useState<CvPreviewResult | null>(null)
+  const [lineFollowerPreview, setLineFollowerPreview] =
+    useState<LineFollowerPreviewResult | null>(null)
   const [batch, setBatch] = useState<PreviewResult[]>([])
   const [snippet, setSnippet] = useState('')
   const [tubError, setTubError] = useState<string | null>(null)
@@ -139,6 +174,7 @@ export default function App() {
       setCvPreprocess(imported.cv_preprocess)
       setCvDebugTransformations(imported.cv_debug_transformations)
       setCvParams(imported.cv_params)
+      setLineFollower(normalizeLineFollower(imported.line_follower))
       setRoi(imported.roi)
       if (imported.mask_metadata_path) setMasksPath(imported.mask_metadata_path)
       if (!quiet) setStatus(`Imported CV settings from ${imported.path}`)
@@ -229,7 +265,7 @@ export default function App() {
   )
 
   useDebouncedEffect(() => {
-    if (tab === 'debug' || tab === 'replay') return
+    if (tab === 'debug' || tab === 'linefollow' || tab === 'replay') return
     if (!path || previewIndexes.length === 0) {
       setPreview(null)
       setBatch([])
@@ -334,6 +370,46 @@ export default function App() {
     roi,
   ], PREVIEW_DEBOUNCE_MS)
 
+  useDebouncedEffect(() => {
+    if (tab !== 'linefollow' || !path || previewIndexes.length === 0) {
+      if (tab === 'linefollow') setLineFollowerPreview(null)
+      return
+    }
+    let cancelled = false
+    setPreviewError(null)
+    void api
+      .previewLineFollower({
+        path,
+        indexes: previewIndexes,
+        cv_preprocess: cvPreprocess,
+        roi,
+        line_follower: lineFollower,
+      })
+      .then((response) => {
+        if (cancelled) return
+        const focus = focusIndex ?? previewIndexes[0]
+        setLineFollowerPreview(
+          response.results.find((result) => result.index === focus) ??
+            response.results[0] ??
+            null,
+        )
+      })
+      .catch((error: Error) => {
+        if (!cancelled) setPreviewError(error.message)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    tab,
+    path,
+    previewIndexes,
+    focusIndex,
+    cvPreprocess,
+    roi,
+    lineFollower,
+  ], PREVIEW_DEBOUNCE_MS)
+
   async function handleAugmentExport() {
     setBusyExport(true)
     try {
@@ -357,6 +433,7 @@ export default function App() {
         cv_preprocess: cvPreprocess,
         cv_debug_transformations: cvDebugTransformations,
         cv_params: cvParams,
+        line_follower: exportProfile === 'cv_control' ? lineFollower : undefined,
         roi,
       })
       setSnippet(res.snippet)
@@ -375,6 +452,26 @@ export default function App() {
         cv_preprocess: cvPreprocess,
         cv_debug_transformations: cvDebugTransformations,
         cv_params: cvParams,
+        line_follower: lineFollower,
+        roi,
+      })
+      setSnippet(res.snippet)
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusyExport(false)
+    }
+  }
+
+  async function handleLineFollowerExport() {
+    setBusyExport(true)
+    try {
+      const res = await api.exportConfig({
+        profile: 'cv_control',
+        cv_preprocess: cvPreprocess,
+        cv_debug_transformations: cvDebugTransformations,
+        cv_params: cvParams,
+        line_follower: lineFollower,
         roi,
       })
       setSnippet(res.snippet)
@@ -413,6 +510,7 @@ export default function App() {
         cv_preprocess: cvPreprocess,
         cv_debug_transformations: cvDebugTransformations,
         cv_params: cvParams,
+        line_follower: exportProfile === 'cv_control' ? lineFollower : undefined,
         roi,
       }),
     [
@@ -422,6 +520,7 @@ export default function App() {
       cvPreprocess,
       cvDebugTransformations,
       cvParams,
+      lineFollower,
       roi,
     ],
   )
@@ -434,9 +533,24 @@ export default function App() {
         cv_preprocess: cvPreprocess,
         cv_debug_transformations: cvDebugTransformations,
         cv_params: cvParams,
+        line_follower: lineFollower,
         roi,
       }),
-    [cvPreprocess, cvDebugTransformations, cvParams, roi],
+    [cvPreprocess, cvDebugTransformations, cvParams, lineFollower, roi],
+  )
+
+  const applyLineFollower = useCallback(
+    (configPath: string) =>
+      api.applyConfig({
+        myconfig_path: configPath,
+        profile: 'cv_control',
+        cv_preprocess: cvPreprocess,
+        cv_debug_transformations: cvDebugTransformations,
+        cv_params: cvParams,
+        line_follower: lineFollower,
+        roi,
+      }),
+    [cvPreprocess, cvDebugTransformations, cvParams, lineFollower, roi],
   )
 
   const applyCurate = useCallback(
@@ -459,6 +573,7 @@ export default function App() {
           : [...cvPreprocess, 'REGION_MASK'],
         cv_debug_transformations: cvDebugTransformations,
         cv_params: cvParams,
+        line_follower: exportProfile === 'cv_control' ? lineFollower : undefined,
         roi,
         masks_path: masksPath,
       }),
@@ -469,6 +584,7 @@ export default function App() {
       cvPreprocess,
       cvDebugTransformations,
       cvParams,
+      lineFollower,
       roi,
       masksPath,
     ],
@@ -489,6 +605,7 @@ export default function App() {
           : [...cvPreprocess, 'REGION_MASK'],
         cv_debug_transformations: cvDebugTransformations,
         cv_params: cvParams,
+        line_follower: exportProfile === 'cv_control' ? lineFollower : undefined,
         roi,
         masks_path: masksPath,
       })
@@ -510,6 +627,7 @@ export default function App() {
               ['augment', 'Augment'],
               ['crop', 'Crop / ROI'],
               ['debug', 'Debug / Edges'],
+              ['linefollow', 'Line Follow'],
               ['curate', 'Curate'],
               ['mask', 'Mask'],
               ['replay', 'Replay'],
@@ -641,6 +759,19 @@ export default function App() {
             busy={busyExport}
             onExport={handleDebugExport}
             onApply={applyDebug}
+          />
+        )}
+        {tab === 'linefollow' && (
+          <LineFollowerLabTab
+            preview={lineFollowerPreview}
+            error={previewError}
+            cvPreprocess={cvPreprocess}
+            lineFollower={lineFollower}
+            onLineFollowerChange={setLineFollower}
+            snippet={snippet}
+            busy={busyExport}
+            onExport={handleLineFollowerExport}
+            onApply={applyLineFollower}
           />
         )}
         {tab === 'curate' && (

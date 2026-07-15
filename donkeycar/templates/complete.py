@@ -126,7 +126,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None,
     # - it will optionally add any configured 'joystick' controller
     #
     has_input_controller = hasattr(cfg, "CONTROLLER_TYPE") and cfg.CONTROLLER_TYPE != "mock"
-    ctr = add_user_controller(V, cfg, use_joystick)
+    ctr, web_ctr = add_user_controller(V, cfg, use_joystick)
 
     #
     # convert 'user/steering' to 'user/angle' to be backward compatible with deep learning data
@@ -558,6 +558,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None,
         print("You can now go to http://localhost:%d to drive your car." % cfg.WEB_CONTROL_PORT)
     else:
         print("You can now go to <your hostname.local>:%d to drive your car." % cfg.WEB_CONTROL_PORT)
+    web_ctr.set_tub(tub_writer.tub)
     if has_input_controller:
         print("You can now move your controller to drive your car.")
         if isinstance(ctr, JoystickController):
@@ -684,15 +685,17 @@ def add_user_controller(V, cfg, use_joystick, input_image='ui/image_array'):
     :param V: the vehicle pipeline.
               On output this will be modified.
     :param cfg: the configuration (from myconfig.py)
-    :return: the controller
+    :return: (ctr, web_ctr) where ctr is the primary input controller
+             (joystick if configured, otherwise the web controller) and
+             web_ctr is always the LocalWebController instance.
     """
 
     #
     # This web controller will create a web server that is capable
     # of managing steering, throttle, and modes, and more.
     #
-    ctr = LocalWebController(port=cfg.WEB_CONTROL_PORT, mode=cfg.WEB_INIT_MODE)
-    V.add(ctr,
+    web_ctr = LocalWebController(port=cfg.WEB_CONTROL_PORT, mode=cfg.WEB_INIT_MODE)
+    V.add(web_ctr,
           inputs=[input_image, 'tub/num_records', 'user/mode', 'recording'],
           outputs=['user/steering', 'user/throttle', 'user/mode', 'recording', 'web/buttons'],
           threaded=True)
@@ -700,6 +703,7 @@ def add_user_controller(V, cfg, use_joystick, input_image='ui/image_array'):
     #
     # also add a physical controller if one is configured
     #
+    ctr = web_ctr
     if use_joystick or cfg.USE_JOYSTICK_AS_DEFAULT:
         #
         # RC controller
@@ -777,7 +781,7 @@ def add_user_controller(V, cfg, use_joystick, input_image='ui/image_array'):
                        'recording'],
               threaded=True)
 
-    return ctr
+    return ctr, web_ctr
 
 
 def add_simulator(V, cfg):

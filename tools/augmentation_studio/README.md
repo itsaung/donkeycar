@@ -32,6 +32,7 @@ in place — no copy-paste needed. It is safe by design:
 | Curate | keep/exclude grid | `TRAIN_FILTER` + external JSON |
 | Mask | draw block-out regions | `REGION_MASK` + `MASK_METADATA_PATH` |
 | Debug / Edges | preview original → preprocess → edges | `CV_DEBUG_TRANSFORMATIONS` + Canny/blur settings |
+| Line Follow | live `LineFollower` HSV/scan/PID overlay | `SCAN_*`, `COLOR_THRESHOLD_*`, `PID_*`, throttle |
 
 Use the header **Target** selector to choose the export profile:
 

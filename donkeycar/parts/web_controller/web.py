@@ -123,6 +123,7 @@ class LocalWebController(tornado.web.Application):
         self.num_records = 0
         self.wsclients = []
         self.loop = None
+        self.tub = None  # set via set_tub() after TubWriter is created
 
 
         handlers = [
@@ -133,6 +134,9 @@ class LocalWebController(tornado.web.Application):
             (r"/calibrate", CalibrateHandler),
             (r"/video", VideoAPI),
             (r"/wsTest", WsTest),
+            (r"/api/tub/recent", TubRecentAPI),
+            (r"/api/tub/image/([0-9]+)", TubImageAPI),
+            (r"/api/tub/delete", TubDeleteAPI),
 
             (r"/static/(.*)", StaticFileHandler,
              {"path": self.static_file_path}),
@@ -142,6 +146,126 @@ class LocalWebController(tornado.web.Application):
         super().__init__(handlers, **settings)
         logger.info(f"You can now go to {gethostname()}.local:{port} to "
                     f"drive your car.")
+
+    def set_tub(self, tub):
+        """Attach the active recording tub for in-drive review/delete."""
+        self.tub = tub
+        logger.info(f"Web controller tub attached: {getattr(tub, 'base_path', tub)}")
+
+    def _image_key(self):
+        """Return the tub field name that stores camera images."""
+        if self.tub is None:
+            return 'cam/image_array'
+        inputs = list(self.tub.manifest.inputs or self.tub.inputs or [])
+        types = list(self.tub.manifest.types or self.tub.types or [])
+        for key, typ in zip(inputs, types):
+            if typ == 'image_array':
+                return key
+        return 'cam/image_array'
+
+    @staticmethod
+    def _record_angle(rec):
+        for key in ('user/angle', 'steering', 'pilot/angle'):
+            if key in rec and rec[key] is not None:
+                return float(rec[key])
+        return 0.0
+
+    @staticmethod
+    def _record_throttle(rec):
+        for key in ('user/throttle', 'throttle', 'pilot/throttle'):
+            if key in rec and rec[key] is not None:
+                return float(rec[key])
+        return 0.0
+
+    def get_recent_records(self, n=100):
+        """
+        Return the last n non-deleted records as lightweight dicts for the UI.
+        Reads only as many trailing catalog files as needed.
+        """
+        if self.tub is None:
+            return [], 0, None
+
+        n = max(1, min(int(n), 500))
+        image_key = self._image_key()
+        manifest = self.tub.manifest
+        alive = sorted(
+            set(range(manifest.current_index)) - manifest.deleted_indexes
+        )
+        total = len(alive)
+        if not alive:
+            return [], 0, getattr(self.tub, 'base_path', None)
+
+        wanted_indexes = alive[-n:]
+        min_wanted = wanted_indexes[0]
+        wanted_set = set(wanted_indexes)
+        max_len = max(1, int(manifest.max_len))
+        catalog_paths = list(manifest.catalog_paths)
+        # Only open catalogs that can contain wanted indexes
+        start_catalog = min_wanted // max_len
+        by_idx = {}
+
+        from donkeycar.parts.datastore_v2 import Catalog
+
+        for catalog_i in range(start_catalog, len(catalog_paths)):
+            catalog_path = os.path.join(manifest.base_path,
+                                        catalog_paths[catalog_i])
+            catalog = Catalog(catalog_path, read_only=True)
+            try:
+                catalog.seekable.seek_line_start(1)
+                # Absolute index of first record in this catalog
+                abs_index = catalog_i * max_len
+                while True:
+                    contents = catalog.seekable.readline()
+                    if contents is None or len(contents) == 0:
+                        break
+                    if abs_index in manifest.deleted_indexes:
+                        abs_index += 1
+                        continue
+                    if abs_index < min_wanted:
+                        abs_index += 1
+                        continue
+                    if abs_index > wanted_indexes[-1]:
+                        break
+                    try:
+                        rec = json.loads(contents)
+                    except Exception:
+                        abs_index += 1
+                        continue
+                    # Prefer catalog _index if present
+                    idx = rec.get('_index', abs_index)
+                    if idx in wanted_set:
+                        by_idx[idx] = {
+                            'index': idx,
+                            'angle': self._record_angle(rec),
+                            'throttle': self._record_throttle(rec),
+                            'image_file': rec.get(image_key),
+                            'timestamp_ms': rec.get('_timestamp_ms'),
+                        }
+                    abs_index += 1
+            finally:
+                try:
+                    catalog.close()
+                except Exception:
+                    pass
+
+        recent = [by_idx[i] for i in wanted_indexes if i in by_idx]
+        return recent, total, getattr(self.tub, 'base_path', None)
+
+    def delete_record_indexes(self, indexes):
+        """Soft-delete the given record indexes from the attached tub."""
+        if self.tub is None:
+            raise RuntimeError('No tub attached to web controller')
+        indexes = sorted({int(i) for i in indexes})
+        if not indexes:
+            return 0
+        # Never delete the index currently being written (current_index is next)
+        max_safe = self.tub.manifest.current_index - 1
+        indexes = [i for i in indexes if 0 <= i <= max_safe]
+        if not indexes:
+            return 0
+        self.tub.delete_records(indexes)
+        logger.info(f"Deleted {len(indexes)} tub records via web UI")
+        return len(indexes)
 
     def update(self):
         """ Start the tornado webserver. """
@@ -218,6 +342,124 @@ class LocalWebController(tornado.web.Application):
 
     def shutdown(self):
         pass
+
+
+class TubRecentAPI(RequestHandler):
+    """Return the last N recorded frames for the review drawer."""
+
+    def get(self):
+        try:
+            n = int(self.get_argument('n', '100'))
+        except ValueError:
+            n = 100
+        records, total, tub_path = self.application.get_recent_records(n)
+        self.set_header('Content-Type', 'application/json')
+        self.write(json.dumps({
+            'ok': True,
+            'tub_path': tub_path,
+            'total': total,
+            'count': len(records),
+            'n': n,
+            'recording': bool(self.application.recording),
+            'records': records,
+        }))
+
+
+class TubImageAPI(RequestHandler):
+    """Serve a single tub image by record index."""
+
+    def get(self, index):
+        from donkeycar.parts.tub_v2 import Tub
+
+        tub = self.application.tub
+        if tub is None:
+            self.set_status(404)
+            self.write('No tub attached')
+            return
+        try:
+            index = int(index)
+        except ValueError:
+            self.set_status(400)
+            self.write('Invalid index')
+            return
+
+        if index in tub.manifest.deleted_indexes:
+            self.set_status(404)
+            self.write('Record deleted')
+            return
+
+        image_key = self.application._image_key()
+        # Try jpg then png using Tub naming convention
+        image_path = None
+        for ext in ('.jpg', '.png'):
+            name = Tub._image_file_name(index, image_key, extension=ext)
+            candidate = os.path.join(tub.images_base_path, name)
+            if os.path.isfile(candidate):
+                image_path = candidate
+                break
+
+        if image_path is None:
+            self.set_status(404)
+            self.write('Image file missing')
+            return
+
+        if image_path.lower().endswith('.png'):
+            self.set_header('Content-Type', 'image/png')
+        else:
+            self.set_header('Content-Type', 'image/jpeg')
+        self.set_header('Cache-Control', 'no-cache')
+        with open(image_path, 'rb') as f:
+            self.write(f.read())
+
+
+class TubDeleteAPI(RequestHandler):
+    """Soft-delete selected record indexes from the active tub."""
+
+    def post(self):
+        try:
+            data = tornado.escape.json_decode(self.request.body or b'{}')
+        except Exception:
+            self.set_status(400)
+            self.write(json.dumps({'ok': False, 'error': 'Invalid JSON'}))
+            return
+
+        indexes = data.get('indexes') or []
+        if not isinstance(indexes, list):
+            self.set_status(400)
+            self.write(json.dumps({'ok': False, 'error': 'indexes must be a list'}))
+            return
+
+        # Stop recording while deleting to avoid racing the writer
+        if self.application.recording:
+            self.application.recording = False
+            self.application.recording_latch = False
+            if self.application.loop is not None:
+                self.application.loop.add_callback(
+                    lambda: self.application.update_wsclients(
+                        {'recording': False}))
+
+        try:
+            deleted = self.application.delete_record_indexes(indexes)
+        except RuntimeError as e:
+            self.set_status(400)
+            self.write(json.dumps({'ok': False, 'error': str(e)}))
+            return
+        except Exception as e:
+            logger.exception('Tub delete failed')
+            self.set_status(500)
+            self.write(json.dumps({'ok': False, 'error': str(e)}))
+            return
+
+        tub = self.application.tub
+        total = len(tub) if tub is not None else 0
+        tub_path = getattr(tub, 'base_path', None) if tub is not None else None
+        self.set_header('Content-Type', 'application/json')
+        self.write(json.dumps({
+            'ok': True,
+            'deleted': deleted,
+            'total': total,
+            'tub_path': tub_path,
+        }))
 
 
 class DriveAPI(RequestHandler):

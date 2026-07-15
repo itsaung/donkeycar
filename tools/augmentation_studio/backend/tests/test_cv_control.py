@@ -16,6 +16,10 @@ def test_import_myconfig_reads_literals_without_executing(tmp_path):
             "CV_PREPROCESS = ['CROP']",
             "ROI_CROP_TOP = 37",
             "CANNY_LOW_THRESHOLD = 42",
+            "SCAN_Y = 88",
+            "COLOR_THRESHOLD_LOW = (5, 40, 40)",
+            "COLOR_THRESHOLD_HIGH = (45, 255, 255)",
+            "PID_P = -0.02",
             f"open({str(marker)!r}, 'w').write('bad')",
         ]),
         encoding='utf-8',
@@ -26,6 +30,9 @@ def test_import_myconfig_reads_literals_without_executing(tmp_path):
     assert result['cv_preprocess'] == ['CROP']
     assert result['roi']['ROI_CROP_TOP'] == 37
     assert result['cv_params']['CANNY_LOW_THRESHOLD'] == 42
+    assert result['line_follower']['SCAN_Y'] == 88
+    assert result['line_follower']['COLOR_THRESHOLD_LOW'] == (5, 40, 40)
+    assert result['line_follower']['PID_P'] == -0.02
     assert not marker.exists()
 
 
@@ -39,14 +46,58 @@ def test_cv_control_export_uses_cv_keys_not_training_keys():
             'CANNY_HIGH_THRESHOLD': 120,
         },
         roi={'ROI_CROP_TOP': 40},
+        line_follower={
+            'SCAN_Y': 90,
+            'COLOR_THRESHOLD_LOW': (0, 50, 50),
+            'COLOR_THRESHOLD_HIGH': (50, 255, 255),
+            'PID_P': -0.015,
+        },
     )
 
     assert "CV_PREPROCESS = ['TRAPEZE_EDGE']" in snippet
     assert "CV_DEBUG_TRANSFORMATIONS = ['RGB2GRAY', 'BLUR', 'CANNY']" in snippet
     assert 'CANNY_LOW_THRESHOLD = 45' in snippet
     assert 'ROI_CROP_TOP = 40' in snippet
+    assert 'SCAN_Y = 90' in snippet
+    assert 'COLOR_THRESHOLD_LOW = (0, 50, 50)' in snippet
+    assert 'PID_P = -0.015' in snippet
     assert '\nTRANSFORMATIONS =' not in snippet
     assert '\nAUGMENTATIONS =' not in snippet
+
+
+def test_line_follower_preview_detects_yellow_stripe(monkeypatch):
+    height, width = 120, 160
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    stripe_x = 80
+    image[100:120, stripe_x - 2:stripe_x + 3, :] = (255, 255, 0)
+
+    monkeypatch.setattr(
+        cv_config.tub_loader,
+        'load_image_array',
+        lambda path, index: image.copy(),
+    )
+
+    results = cv_config.preview_line_follower_indexes(
+        '/tmp/fake-tub',
+        [0],
+        cv_preprocess=[],
+        roi={},
+        line_follower={
+            'SCAN_Y': 100,
+            'SCAN_HEIGHT': 20,
+            'COLOR_THRESHOLD_LOW': (0, 50, 50),
+            'COLOR_THRESHOLD_HIGH': (50, 255, 255),
+            'TARGET_PIXEL': stripe_x,
+            'CONFIDENCE_THRESHOLD': 0.0015,
+        },
+    )
+
+    assert len(results) == 1
+    result = results[0]
+    assert result['line_detected'] is True
+    assert abs(result['max_yellow'] - stripe_x) <= 2
+    assert result['overlay'].shape == image.shape
+    assert result['overlay'].sum() > 0
 
 
 def test_cv_replay_runs_cv_control_interface(monkeypatch):
