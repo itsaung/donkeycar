@@ -1,0 +1,12 @@
+{
+  "models": [
+    {
+      "id": "example-linear",
+      "label": "Example linear pilot (configure me)",
+      "path": "/path/to/mycar/models/pilot.h5",
+      "type": "linear",
+      "config_path": "/path/to/mycar/config.py",
+      "myconfig_path": "/path/to/mycar/myconfig.py"
+    }
+  ]
+}

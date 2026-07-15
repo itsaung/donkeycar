@@ -1,0 +1,9 @@
+{
+  "tubs": {
+    "example-tub": {
+      "label": "Example tub (configure me)",
+      "path": "/path/to/mycar/data/tub_1",
+      "tag": "holdout"
+    }
+  }
+}

@@ -29,6 +29,8 @@ from donkeycar.parts.logger import LoggerPart
 from donkeycar.parts.transform import Lambda
 from donkeycar.parts.explode import ExplodeDict
 from donkeycar.parts.controller import JoystickController
+from donkeycar.parts.cv_debug import CvDebugPipeline, CvUiImage
+from donkeycar.parts.image_transformations import ImageTransformations
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -72,10 +74,28 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
     V.add(ExplodeDict(V.mem, "web/"), inputs=['web/buttons'])
 
     #
+    # Optional RGB-safe preprocess (CROP / TRAPEZE) before the CV controller.
+    # Do NOT put CANNY here — LineFollower expects color (HSV).
+    #
+    cv_preprocess = getattr(cfg, 'CV_PREPROCESS', None) or []
+    controller_inputs = list(cfg.CV_CONTROLLER_INPUTS)
+    if cv_preprocess:
+        logger.info("CV_PREPROCESS enabled: %s", cv_preprocess)
+        V.add(ImageTransformations(cfg, 'CV_PREPROCESS'),
+              inputs=['cam/image_array'],
+              outputs=['cv/preprocessed'])
+        # Prefer preprocessed frame when controller still points at the camera.
+        controller_inputs = [
+            'cv/preprocessed' if name == 'cam/image_array' else name
+            for name in controller_inputs
+        ]
+
+    #
     # track user vs autopilot condition
+    # cv/display_image is overlay or Canny debug (from previous loop)
     #
     V.add(UserPilotCondition(show_pilot_image=getattr(cfg, 'OVERLAY_IMAGE', False)),
-          inputs=['user/mode', "cam/image_array", "cv/image_array"],
+          inputs=['user/mode', "cam/image_array", "cv/display_image"],
           outputs=['run_user', "run_pilot", "ui/image_array"])
 
     #
@@ -104,9 +124,21 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
     add_cv_controller(V, cfg, pid,
                       cfg.CV_CONTROLLER_MODULE,
                       cfg.CV_CONTROLLER_CLASS,
-                      cfg.CV_CONTROLLER_INPUTS,
+                      controller_inputs,
                       cfg.CV_CONTROLLER_OUTPUTS,
                       cfg.CV_CONTROLLER_CONDITION)
+
+    #
+    # Debug edge/mask pipeline (gray → blur → Canny) for live UI preview.
+    # Uses the same frame the controller sees when preprocess is enabled.
+    #
+    debug_src = 'cv/preprocessed' if cv_preprocess else 'cam/image_array'
+    V.add(CvDebugPipeline(cfg),
+          inputs=[debug_src],
+          outputs=['cv/debug_image'])
+    V.add(CvUiImage(show_debug=getattr(cfg, 'CV_SHOW_DEBUG_PIPELINE', False)),
+          inputs=['cv/image_array', 'cv/debug_image'],
+          outputs=['cv/display_image'])
 
     recording_control = ToggleRecording(cfg.AUTO_RECORD_ON_THROTTLE, cfg.RECORD_DURING_AI)
     V.add(recording_control, inputs=['user/mode', "recording"], outputs=["recording"])

@@ -1,10 +1,149 @@
 import logging
-from typing import List
+from typing import Any, Dict, List
 from donkeycar.config import Config
 from donkeycar.parts import cv as cv_parts
 
 
 logger = logging.getLogger(__name__)
+
+
+# Declarative metadata for LOK introspection (ROI / mask transforms).
+# Transform math lives in image_transformer / cv parts — unchanged by this.
+TRANSFORM_REGISTRY: Dict[str, Any] = {
+    'RGB2GRAY': {
+        'description': 'Convert RGB camera input to grayscale',
+        'params': {},
+    },
+    'BLUR': {
+        'description': 'Smooth image noise before edge detection',
+        'params': {
+            'BLUR_KERNEL': {
+                'type': 'int', 'default': 5, 'min': 1, 'max': 31, 'step': 2,
+                'description': 'Horizontal blur kernel size (odd number)',
+            },
+            'BLUR_KERNEL_Y': {
+                'type': 'int_or_none', 'default': None,
+                'min': 1, 'max': 31, 'step': 2,
+                'description': 'Optional vertical kernel size',
+            },
+            'BLUR_GAUSSIAN': {
+                'type': 'bool', 'default': True,
+                'description': 'Use Gaussian rather than box blur',
+            },
+        },
+    },
+    'CANNY': {
+        'description': 'Detect strong image edges for lane finding',
+        'params': {
+            'CANNY_LOW_THRESHOLD': {
+                'type': 'int', 'default': 60, 'min': 0, 'max': 255, 'step': 1,
+                'description': 'Lower edge threshold',
+            },
+            'CANNY_HIGH_THRESHOLD': {
+                'type': 'int', 'default': 110, 'min': 0, 'max': 255, 'step': 1,
+                'description': 'Upper edge threshold',
+            },
+            'CANNY_APERTURE': {
+                'type': 'int', 'default': 3, 'min': 3, 'max': 7, 'step': 2,
+                'description': 'Sobel aperture size (3, 5, or 7)',
+            },
+        },
+    },
+    'CROP': {
+        'description': 'Zero out rectangular borders (keep center)',
+        'params': {
+            'ROI_CROP_LEFT': {
+                'type': 'int', 'default': 0, 'min': 0, 'max': 400, 'step': 1,
+                'description': 'Pixels masked from left',
+            },
+            'ROI_CROP_TOP': {
+                'type': 'int', 'default': 45, 'min': 0, 'max': 400, 'step': 1,
+                'description': 'Pixels masked from top',
+            },
+            'ROI_CROP_RIGHT': {
+                'type': 'int', 'default': 0, 'min': 0, 'max': 400, 'step': 1,
+                'description': 'Pixels masked from right',
+            },
+            'ROI_CROP_BOTTOM': {
+                'type': 'int', 'default': 0, 'min': 0, 'max': 400, 'step': 1,
+                'description': 'Pixels masked from bottom',
+            },
+        },
+    },
+    'TRAPEZE': {
+        'description': 'Keep trapezoidal region (absolute coords)',
+        'params': {
+            'ROI_TRAPEZE_UL': {
+                'type': 'int', 'default': 20, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Upper-left X',
+            },
+            'ROI_TRAPEZE_UR': {
+                'type': 'int', 'default': 140, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Upper-right X',
+            },
+            'ROI_TRAPEZE_LL': {
+                'type': 'int', 'default': 0, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Lower-left X',
+            },
+            'ROI_TRAPEZE_LR': {
+                'type': 'int', 'default': 160, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Lower-right X',
+            },
+            'ROI_TRAPEZE_MIN_Y': {
+                'type': 'int', 'default': 60, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Top Y of trapezoid',
+            },
+            'ROI_TRAPEZE_MAX_Y': {
+                'type': 'int', 'default': 120, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Bottom Y of trapezoid',
+            },
+        },
+    },
+    'TRAPEZE_EDGE': {
+        'description': 'Keep trapezoidal region (edge-relative insets)',
+        'params': {
+            'ROI_TRAPEZE_UL': {
+                'type': 'int', 'default': 20, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Inset from left at top',
+            },
+            'ROI_TRAPEZE_UR': {
+                'type': 'int', 'default': 140, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Inset from right at top',
+            },
+            'ROI_TRAPEZE_LL': {
+                'type': 'int', 'default': 0, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Inset from left at bottom',
+            },
+            'ROI_TRAPEZE_LR': {
+                'type': 'int', 'default': 160, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Inset from right at bottom',
+            },
+            'ROI_TRAPEZE_MIN_Y': {
+                'type': 'int', 'default': 60, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Inset from top',
+            },
+            'ROI_TRAPEZE_MAX_Y': {
+                'type': 'int', 'default': 120, 'min': 0, 'max': 800, 'step': 1,
+                'description': 'Inset from bottom',
+            },
+        },
+    },
+    'REGION_MASK': {
+        'description': 'Block out regions from MASK_METADATA_PATH sidecar',
+        'params': {
+            'MASK_METADATA_PATH': {
+                'type': 'str',
+                'default': '',
+                'description': 'Path to lok_masks.json (outside tub)',
+            },
+            'MASK_PRESET': {
+                'type': 'str',
+                'default': '',
+                'description': 'Optional preset name when no per-index regions',
+            },
+        },
+    },
+}
 
 
 class ImageTransformations:
@@ -66,6 +205,9 @@ def image_transformer(name: str, config):
             config.ROI_CROP_RIGHT,
             config.ROI_CROP_BOTTOM
         )
+    elif "REGION_MASK" == name:
+        from donkeycar.parts.region_mask import ImgRegionMask
+        return ImgRegionMask(config)
     #
     # color space transformations
     #

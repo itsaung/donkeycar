@@ -825,3 +825,14 @@ WEB_CONTROL_PORT = int(os.getenv("WEB_CONTROL_PORT", 8887))
 # 'local_angle': AI Steering, Human Throttle
 # 'local': AI Steering and Throttle
 WEB_INIT_MODE = "user"
+
+
+# AGENT API (Claude / external agents)
+# REST + WebSocket API for programmatic steering/throttle and sensor streams.
+# Default OFF — enable in myconfig.py when you want agent access.
+# Human web UI (:WEB_CONTROL_PORT) still works; agent starts inactive.
+HAVE_AGENT_API = False
+AGENT_API_PORT = int(os.getenv("AGENT_API_PORT", 8891))
+AGENT_API_COMMAND_TIMEOUT_SECS = 0.5
+AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN", "")
+AGENT_API_STREAM_HZ = 10

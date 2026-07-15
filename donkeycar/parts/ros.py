@@ -2,6 +2,8 @@ import rospy
 from std_msgs.msg import String, Int32, Float32
 
 '''
+ROS 1 (rospy) parts. Prefer donkeycar.parts.ros2 for ROS 2.
+
 sudo apt-get install python3-catkin-pkg
 
 ROS issues w python3:

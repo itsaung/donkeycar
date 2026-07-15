@@ -426,6 +426,13 @@ FUSION_DEBUG = False            # Logs the position and yaw from the kalman filt
 WEB_CONTROL_PORT = int(os.getenv("WEB_CONTROL_PORT", 8887))  # which port to listen on when making a web controller
 WEB_INIT_MODE = "user"              # which control mode to start in. one of user|local_angle|local. Setting local will start in ai mode.
 
+# AGENT API (Claude / external agents) — see cfg_complete.py for details.
+HAVE_AGENT_API = False
+AGENT_API_PORT = int(os.getenv("AGENT_API_PORT", 8891))
+AGENT_API_COMMAND_TIMEOUT_SECS = 0.5
+AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN", "")
+AGENT_API_STREAM_HZ = 10
+
 #JOYSTICK
 USE_JOYSTICK_AS_DEFAULT = False      #when starting the manage.py, when True, will not require a --js option to use the joystick
 JOYSTICK_MAX_THROTTLE = 0.5         #this scalar is multiplied with the -1 to 1 throttle value to limit the maximum throttle. This can help if you drop the controller or just don't need the full speed available.

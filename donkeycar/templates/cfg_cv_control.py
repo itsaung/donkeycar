@@ -361,6 +361,13 @@ DC_TWO_WHEEL_L298N = {
 WEB_CONTROL_PORT = int(os.getenv("WEB_CONTROL_PORT", 8887))  # which port to listen on when making a web controller
 WEB_INIT_MODE = "user"              # which control mode to start in. one of user|local_angle|local. Setting local will start in ai mode.
 
+# AGENT API (Claude / external agents) — see cfg_complete.py for details.
+HAVE_AGENT_API = False
+AGENT_API_PORT = int(os.getenv("AGENT_API_PORT", 8891))
+AGENT_API_COMMAND_TIMEOUT_SECS = 0.5
+AGENT_API_TOKEN = os.getenv("AGENT_API_TOKEN", "")
+AGENT_API_STREAM_HZ = 10
+
 #JOYSTICK
 USE_JOYSTICK_AS_DEFAULT = False      #when starting the manage.py, when True, will not require a --js option to use the joystick
 JOYSTICK_MAX_THROTTLE = 0.5         #this scalar is multiplied with the -1 to 1 throttle value to limit the maximum throttle. This can help if you drop the controller or just don't need the full speed available.
@@ -558,6 +565,60 @@ CV_CONTROLLER_CLASS = "LineFollower"
 CV_CONTROLLER_INPUTS = ['cam/image_array']
 CV_CONTROLLER_OUTPUTS = ['pilot/steering', 'pilot/throttle', 'cv/image_array']
 CV_CONTROLLER_CONDITION = "run_pilot"
+
+# ------------------------------------------------------------------------------
+# CV PREPROCESS / DEBUG (Track 2 Phase 0 — Canny, crop, masks)
+# ------------------------------------------------------------------------------
+# RGB-safe masks applied BEFORE the CV controller (LineFollower).
+# Recommended for Track 2: ['CROP'] or ['TRAPEZE_EDGE']
+# Do NOT put 'CANNY' here — LineFollower needs color for HSV thresholding.
+CV_PREPROCESS = []
+
+# Edge/mask preview pipeline shown in the web UI when CV_SHOW_DEBUG_PIPELINE.
+# Typical lane-prep stack: grayscale → blur → Canny edges.
+CV_DEBUG_TRANSFORMATIONS = ['RGB2GRAY', 'BLUR', 'CANNY']
+
+# True: web UI shows the debug pipeline instead of the LineFollower overlay.
+CV_SHOW_DEBUG_PIPELINE = False
+
+# "CROP" — mask rectangular borders (keep center region)
+# # # # # # # # # # # # #
+# xxxxxxxxxxxxxxxxxxxxx #
+# xxxxxxxxxxxxxxxxxxxxx # top
+# xx                 xx #
+# xx                 xx #
+# xxxxxxxxxxxxxxxxxxxxx # bottom
+# # # # # # # # # # # # #
+ROI_CROP_TOP = 45
+ROI_CROP_BOTTOM = 0
+ROI_CROP_RIGHT = 0
+ROI_CROP_LEFT = 0
+
+# "TRAPEZE" / "TRAPEZE_EDGE" — keep a road-shaped trapezoid
+# # # # # # # # # # # # # #
+# xxxxxxxxxxxxxxxxxxxxxxx #
+# xxxx ul     ur xxxxxxxx # min_y
+# xxx             xxxxxxx #
+# xx               xxxxxx #
+# x                 xxxxx #
+# ll                lr xx # max_y
+# # # # # # # # # # # # # #
+ROI_TRAPEZE_LL = 0
+ROI_TRAPEZE_LR = 160
+ROI_TRAPEZE_UL = 20
+ROI_TRAPEZE_UR = 140
+ROI_TRAPEZE_MIN_Y = 60
+ROI_TRAPEZE_MAX_Y = 120
+
+# "CANNY" edge detection (used by CV_DEBUG_TRANSFORMATIONS / future LaneFollower)
+CANNY_LOW_THRESHOLD = 60
+CANNY_HIGH_THRESHOLD = 110
+CANNY_APERTURE = 3
+
+# "BLUR" (usually before Canny)
+BLUR_KERNEL = 5
+BLUR_KERNEL_Y = None
+BLUR_GAUSSIAN = True
 
 # LineFollower - line color and detection area
 SCAN_Y = 100          # num pixels from the top to start horiz scan

@@ -27,3 +27,9 @@ htmlcov/
 # PyTorch
 lightning_logs
 tb_logs
+
+# LOK local installs
+tools/augmentation_studio/.venv/
+tools/augmentation_studio/frontend/node_modules/
+tools/augmentation_studio/frontend/dist/
+.venv/

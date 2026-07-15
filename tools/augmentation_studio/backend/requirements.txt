@@ -1,0 +1,22 @@
+# LOK backend deps (Python 3.12+ OK for this tool alone).
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+pydantic>=2.0
+numpy>=1.23,<2.0
+pillow
+albumentations
+opencv-contrib-python-headless==4.9.0.80
+# Minimal donkeycar import chain (avoid full tensorflow stack):
+pyfiglet
+PrettyTable
+docopt
+tornado
+requests
+progress
+simple_pid
+paho-mqtt
+psutil
+pynmea2
+pyserial
+typing_extensions

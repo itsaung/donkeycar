@@ -750,6 +750,33 @@ def add_user_controller(V, cfg, use_joystick, input_image='ui/image_array'):
                 outputs=['user/steering', 'user/throttle',
                          'user/mode', 'recording'],
                 threaded=True)
+
+    #
+    # Optional Agent API — programmatic access for Claude / external agents.
+    # Added last among controllers so active agent commands win; when inactive
+    # it pass-throughs human web/joystick values unchanged.
+    #
+    if getattr(cfg, "HAVE_AGENT_API", False):
+        from donkeycar.parts.agent_api import AgentApiController
+        agent_inputs = [
+            'cam/image_array',
+            'user/steering', 'user/throttle', 'user/mode', 'recording',
+            'imu/accel', 'imu/gyro', 'enc/speed', 'tub/num_records',
+        ]
+        agent = AgentApiController(
+            port=getattr(cfg, "AGENT_API_PORT", 8891),
+            mode=cfg.WEB_INIT_MODE,
+            command_timeout_secs=getattr(
+                cfg, "AGENT_API_COMMAND_TIMEOUT_SECS", 0.5),
+            token=getattr(cfg, "AGENT_API_TOKEN", ""),
+            stream_hz=getattr(cfg, "AGENT_API_STREAM_HZ", 10),
+        )
+        V.add(agent,
+              inputs=agent_inputs,
+              outputs=['user/steering', 'user/throttle', 'user/mode',
+                       'recording'],
+              threaded=True)
+
     return ctr
 
 

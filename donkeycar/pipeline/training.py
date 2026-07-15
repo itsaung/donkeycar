@@ -67,10 +67,15 @@ class BatchSequence(object):
         # 1. Initialise TubRecord -> x, y transformations
         def get_x(record: TubRecord) -> Dict[str, Union[float, np.ndarray]]:
             """ Extracting x from record for training"""
-            out_dict = self.model.x_transform(record, self.image_processor)
-            # apply the normalisation here on the fly to go from uint8 -> float
-            out_dict['img_in'] = normalize_image(out_dict['img_in'])
-            return out_dict
+            from donkeycar.parts import mask_context
+            mask_context.set_record_index(record.underlying.get('_index'))
+            try:
+                out_dict = self.model.x_transform(record, self.image_processor)
+                # apply the normalisation here on the fly to go from uint8 -> float
+                out_dict['img_in'] = normalize_image(out_dict['img_in'])
+                return out_dict
+            finally:
+                mask_context.clear_record_index()
 
         def get_y(record: TubRecord) -> Dict[str, Union[float, np.ndarray]]:
             """ Extracting y from record for training """
