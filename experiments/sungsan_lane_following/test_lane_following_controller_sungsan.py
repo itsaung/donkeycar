@@ -15,28 +15,30 @@ def make_cfg(side="left", **overrides):
         CV_INPUT_COLOR_ORDER="BGR",
         IMAGE_W=160,
         IMAGE_H=120,
-        LANE_SCAN_Y=52,
-        LANE_SCAN_HEIGHT=10,
+        LANE_SCAN_Y=68,
+        LANE_SCAN_HEIGHT=8,
         LANE_SCAN_COUNT=4,
-        LANE_SCAN_STEP=15,
-        LANE_YELLOW_THRESHOLD_LOW=(18, 18, 35),
+        LANE_SCAN_STEP=12,
+        LANE_YELLOW_THRESHOLD_LOW=(18, 45, 45),
         LANE_YELLOW_THRESHOLD_HIGH=(35, 255, 255),
         LANE_WHITE_THRESHOLD_LOW=(0, 0, 135),
         LANE_WHITE_THRESHOLD_HIGH=(180, 70, 255),
-        LANE_YELLOW_MIN_DOMINANCE=8,
-        LANE_YELLOW_MAX_RG_DIFF=35,
+        LANE_YELLOW_MIN_DOMINANCE=15,
+        LANE_YELLOW_MAX_RG_DIFF=40,
         LANE_WHITE_MAX_CHANNEL_SPREAD=70,
         LANE_MIN_COMPONENT_AREA_PX=3,
         LANE_MAX_MARKING_WIDTH_PX=18,
         LANE_NOMINAL_WIDTH_PX=52,
         LANE_WIDTH_REFERENCE_Y=82,
         LANE_MIN_WIDTH_PX=20,
-        LANE_MAX_WIDTH_PX=90,
+        LANE_MAX_WIDTH_PX=75,
         LANE_ACQUIRE_BOUNDARY_DISTANCE_PX=32,
         LANE_MAX_CENTER_JUMP_PX=30,
         LANE_MAX_BOUNDARY_JUMP_PX=30,
         LANE_MAX_BAND_CENTER_DEVIATION_PX=28,
         LANE_CENTER_SMOOTHING=0.0,
+        LANE_STEERING_LIMIT=0.65,
+        LANE_MAX_STEERING_STEP=0.20,
         LANE_NO_LINE_STOP_FRAMES=5,
         LANE_REACQUIRE_AFTER_FRAMES=5,
         TARGET_PIXEL=None,
@@ -94,6 +96,18 @@ def lane_image(side="left", scale=1.0, blue_tape=False):
     return image
 
 
+def shifted_lane_image(side, scale, shift_ref):
+    image = lane_image(side, scale=scale)
+    matrix = np.float32([[1, 0, shift_ref * scale], [0, 1, 0]])
+    return cv2.warpAffine(
+        image,
+        matrix,
+        (image.shape[1], image.shape[0]),
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(92, 92, 92),
+    )
+
+
 def test_left_lane_uses_white_left_and_yellow_right():
     follower = controller("left")
     steering, throttle, overlay = follower.run(lane_image("left"))
@@ -130,6 +144,37 @@ def test_resolution_scaling_preserves_lane_center():
 
     assert follower._debug["center"] is not None
     assert abs(follower._debug["center"] - 320) < 24
+
+
+def test_pid_steering_is_resolution_invariant():
+    low = LaneFollower(PID(-0.01, 0.0, 0.0), make_cfg("left"))
+    high = LaneFollower(PID(-0.01, 0.0, 0.0), make_cfg("left"))
+
+    low_steering, _, _ = low.run(shifted_lane_image("left", 1.0, 8))
+    high_steering, _, _ = high.run(shifted_lane_image("left", 4.0, 8))
+
+    assert 0.04 < abs(low_steering) < 0.15
+    assert abs(low_steering - high_steering) < 0.02
+
+
+def test_far_yellow_candidate_cannot_replace_left_lane_divider():
+    image = lane_image("left")
+    yellow_pixels = (
+        (image[:, :, 0] < 20)
+        & (image[:, :, 1] > 200)
+        & (image[:, :, 2] > 200)
+    )
+    image[yellow_pixels] = (92, 92, 92)
+    cv2.line(image, (145, 42), (150, 119), (30, 180, 180), 3)
+
+    follower = controller("left")
+    follower.run(image)
+
+    assert follower._debug["center"] is not None
+    assert follower._debug["center"] < 90
+    assert all(
+        item.yellow_x is None for item in follower._debug["observations"]
+    )
 
 
 def test_single_yellow_boundary_bridges_a_white_gap():
@@ -187,6 +232,8 @@ def test_personal_config_finally_selects_lane_controller():
     assert values["CV_INPUT_COLOR_ORDER"] == "BGR"
     assert values["OAKD_DEPTH"] is False
     assert values["USE_JOYSTICK_AS_DEFAULT"] is False
+    assert values["LANE_YELLOW_THRESHOLD_LOW"] == (18, 45, 45)
+    assert values["LANE_STEERING_LIMIT"] == 0.65
 
 
 def test_invalid_lane_side_is_rejected():

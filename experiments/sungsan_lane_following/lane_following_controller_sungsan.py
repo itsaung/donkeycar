@@ -119,6 +119,12 @@ class LaneFollower:
         self.center_smoothing = float(
             getattr(cfg, "LANE_CENTER_SMOOTHING", 0.35)
         )
+        self.steering_limit = float(
+            getattr(cfg, "LANE_STEERING_LIMIT", 0.65)
+        )
+        self.max_steering_step = float(
+            getattr(cfg, "LANE_MAX_STEERING_STEP", 0.20)
+        )
 
         self.target_pixel_cfg = getattr(cfg, "TARGET_PIXEL", None)
         self.target_threshold = float(getattr(cfg, "TARGET_THRESHOLD", 10))
@@ -252,6 +258,13 @@ class LaneFollower:
             else target - direction * nominal / 2.0
         )
         yellow = self._nearest(yellow_candidates, expected_yellow)
+        if (
+            yellow is not None
+            and previous_yellow is None
+            and abs(yellow.x - expected_yellow)
+            > self.acquire_boundary_distance * sx
+        ):
+            yellow = None
         if (
             yellow is not None
             and previous_yellow is not None
@@ -405,9 +418,17 @@ class LaneFollower:
 
         return center, confidence, trusted, debug_bands
 
+    def _pid_coordinate(self, x, width):
+        if width:
+            return float(x) * float(self.ref_w) / float(width)
+        return float(x)
+
     def _handle_missing(self):
         self.lost_frames += 1
         self.throttle = max(0.0, self.throttle - self.no_lane_throttle_step)
+        self.steering *= 0.55
+        if abs(self.steering) < 0.02:
+            self.steering = 0.0
         if self.lost_frames >= self.no_lane_stop_frames:
             self.steering = 0.0
             self.throttle = 0.0
@@ -452,9 +473,21 @@ class LaneFollower:
             if selected.white_x is not None:
                 self.last_white = selected.white_x
 
-            if self.pid_st.setpoint != target:
-                self.pid_st.setpoint = target
-            self.steering = float(np.clip(self.pid_st(center), -1.0, 1.0))
+            target_control = self._pid_coordinate(target, width)
+            center_control = self._pid_coordinate(center, width)
+            if self.pid_st.setpoint != target_control:
+                self.pid_st.setpoint = target_control
+            requested_steering = float(np.clip(
+                self.pid_st(center_control),
+                -self.steering_limit,
+                self.steering_limit,
+            ))
+            steering_delta = float(np.clip(
+                requested_steering - self.steering,
+                -self.max_steering_step,
+                self.max_steering_step,
+            ))
+            self.steering += steering_delta
 
             sx, _ = self._scale(height, width)
             if abs(center - target) > self.target_threshold * sx:
@@ -519,6 +552,8 @@ class LaneFollower:
                 2,
             )
 
+        observations = debug.get("observations", [])
+        paired_count = sum(item.paired for item in observations)
         status = (
             f"LANE:{self.lane_side} STEER:{self.steering:.2f} "
             f"THROTTLE:{self.throttle:.2f} CONF:{debug.get('confidence', 0.0):.2f} "
@@ -538,6 +573,37 @@ class LaneFollower:
             image,
             status,
             (8, 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        center_status = "NONE" if center is None else f"{center:.0f}"
+        error_ref = (
+            0.0
+            if center is None or target is None
+            else self._pid_coordinate(center - target, image.shape[1])
+        )
+        detail = (
+            f"CENTER:{center_status} TARGET:{target:.0f} "
+            f"PAIRS:{paired_count}/{len(observations)} "
+            f"ERR_REF:{error_ref:+.1f}"
+        )
+        cv2.putText(
+            image,
+            detail,
+            (8, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            detail,
+            (8, 36),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
             (255, 255, 255),

@@ -102,6 +102,11 @@ and the green target. Switch to full `local` mode only after steering direction,
 both lane selections, and line-loss stopping have been checked at raised-wheel
 and low-speed physical tests.
 
+The second overlay line reports the detected centre, camera target, number of
+paired yellow/white scan bands, and the steering error normalized to the 160px
+PID reference. If yellow points appear on a wall or the opposite outer white
+line, return to `user` mode immediately and capture the overlay before tuning.
+
 Web control is the default so a disconnected gamepad cannot stop the camera test.
 Pass `--js` explicitly when the F710 is connected and should be used. The drive
 entry point also applies an isolated DonkeyCar 5.3 OakD compatibility layer that
