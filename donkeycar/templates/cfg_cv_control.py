@@ -623,8 +623,13 @@ BLUR_GAUSSIAN = True
 # LineFollower - line color and detection area
 SCAN_Y = 100          # num pixels from the top to start horiz scan
 SCAN_HEIGHT = 20      # num pixels high to grab from horiz scan
+SCAN_EXTRA_ROWS = 0   # also sample this many bands above and below SCAN_Y
 COLOR_THRESHOLD_LOW  = (0, 50, 50)    # HSV dark yellow (opencv HSV hue value is 0..179, saturation and value are both 0..255)
 COLOR_THRESHOLD_HIGH = (50, 255, 255) # HSV light yellow (opencv HSV hue value is 0..179, saturation and value are both 0..255)
+# Optional second HSV range for camera-shifted line colours. Set both to
+# tuples to enable it, for example a cyan-looking yellow line from an OAK-D.
+COLOR_THRESHOLD_LOW_2 = None
+COLOR_THRESHOLD_HIGH_2 = None
 
 # LineFollower - target (expected) line position and detection thresholds
 TARGET_PIXEL = None   # In not None, then this is the expected horizontal position in pixels of the yellow line.
@@ -634,20 +639,24 @@ TARGET_PIXEL = None   # In not None, then this is the expected horizontal positi
 TARGET_THRESHOLD = 10 # number of pixels from TARGET_PIXEL that vehicle must be pointing
                       # before a steering change will be made; this prevents algorithm
                       # from being too twitchy when it is on or near the line.
-CONFIDENCE_THRESHOLD = 0.0015   # The fraction of total sampled pixels that must be yellow in the sample slice.
-                                # The sample slice will have SCAN_HEIGHT pixels and the total number
-                                # of sampled pixels is IMAGE_W x SCAN_HEIGHT, so if you want to make sure
-                                # that all the pixels in the sample slice are yellow, then the confidence
-                                # threshold should be SCAN_HEIGHT / (IMAGE_W x SCAN_HEIGHT) or (1 / IMAGE_W).
-                                # if you want half of the pixels in the slice to match hten (1 / IMAGE_W) / 2.
-                                # If you keep getting `No line detected` logs in the console then you
-                                # may want to lower the threshold.
+CONFIDENCE_THRESHOLD = 0.05     # Fraction (0..1) of the strongest mask column that must match.
+                                # If you keep getting `No line detected`, tune the HSV ranges and scan
+                                # position in LineFollower Lab before lowering this threshold.
+MAX_LINE_WIDTH_PX = 25          # Reject broad colour regions; value is at IMAGE_W reference scale.
+MIN_LINE_ASPECT_RATIO = 0.55    # Dashed line blobs should be taller than broad background regions.
+MIN_LINE_AREA_PX = 6            # Reject tiny isolated mask speckles; area is at IMAGE_W/IMAGE_H scale.
+MASK_MORPH_KERNEL_PX = 1        # 1 keeps narrow tape; raise to 2 only if the camera has heavy pixel noise.
+MAX_LINE_JUMP_PX = 25           # Reject candidates that jump this far from the previously tracked line.
+REACQUIRE_LINE_AFTER_FRAMES = 5 # After this many misses, allow finding the line from the target again.
+LINE_POSITION_SMOOTHING = 0.65  # 1 uses the newest position; lower values smooth frame-to-frame jitter.
 
 # LineFollower - throttle step controller; increase throttle on straights, descrease on turns
 THROTTLE_MAX = 0.3    # maximum throttle value the controller will produce
 THROTTLE_MIN = 0.15   # minimum throttle value the controller will produce
 THROTTLE_INITIAL = THROTTLE_MIN  # initial throttle value
 THROTTLE_STEP = 0.05  # how much to change throttle when off the line
+NO_LINE_STOP_FRAMES = 5       # stop after this many consecutive misses
+NO_LINE_THROTTLE_STEP = 0.05  # slow down by this amount on each miss
 
 # These three PID constants are crucial to the way the car drives. If you are tuning them
 # start by setting the others zero and focus on first Kp, then Kd, and then Ki.
@@ -673,4 +682,3 @@ INC_PID_D_BTN = None            # button to change PID 'D' constant by PID_D_DEL
 DEC_PID_D_BTN = None            # button to change PID 'D' constant by -PID_D_DELTA
 INC_PID_P_BTN = "R2"            # button to change PID 'P' constant by PID_P_DELTA
 DEC_PID_P_BTN = "L2"            # button to change PID 'P' constant by -PID_P_DELTA
-
