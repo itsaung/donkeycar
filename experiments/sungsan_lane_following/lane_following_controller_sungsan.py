@@ -517,7 +517,10 @@ class LaneFollower:
             sx, _ = self._scale(height, width)
             paired_boundary = any(item.paired for item in observations)
             if not paired_boundary:
-                self.throttle = self.single_boundary_throttle
+                self.throttle = min(
+                    self.single_boundary_throttle,
+                    self.throttle + self.throttle_step,
+                )
             elif abs(center - target) > self.target_threshold * sx:
                 self.throttle = max(
                     self.throttle_min, self.throttle - self.throttle_step

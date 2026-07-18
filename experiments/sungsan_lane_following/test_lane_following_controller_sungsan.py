@@ -207,7 +207,7 @@ def test_left_lane_reacquires_wide_white_boundary_on_sharp_curve():
         for item in follower._debug["observations"]
     )
     assert 0.0 < abs(steering) <= 0.20
-    assert throttle == 0.20
+    assert 0.0 < throttle <= 0.20
 
 
 def test_single_yellow_boundary_bridges_a_white_gap():
