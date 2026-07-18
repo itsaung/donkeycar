@@ -14,6 +14,7 @@ Options:
 """
 import logging
 from pathlib import Path
+import time
 
 from docopt import docopt
 from simple_pid import PID
@@ -33,25 +34,72 @@ logging.basicConfig(level=logging.INFO)
 
 
 def prepare_oakd_compatibility(cfg):
-    """Work around the OakD preview-size attribute mismatch in DonkeyCar 5.3."""
+    """Use only enabled OakD streams and the lower-bandwidth RGB preview."""
     if getattr(cfg, 'CAMERA_TYPE', None) != 'OAKD':
         return
 
     from donkeycar.parts import oak_d
 
-    patched = []
-    if not hasattr(oak_d.OakD, 'image_w'):
-        oak_d.OakD.image_w = oak_d.WIDTH
-        patched.append('image_w')
-    if not hasattr(oak_d.OakD, 'image_h'):
-        oak_d.OakD.image_h = oak_d.HEIGHT
-        patched.append('image_h')
+    if getattr(oak_d.OakD, '_sungsan_lane_compatible', False):
+        return
 
-    if patched:
-        logger.info(
-            "Applied local OakD compatibility for DonkeyCar 5.3 (%s)",
-            ", ".join(patched),
-        )
+    base_oak_d = oak_d.OakD
+
+    class SungsanLaneOakD(base_oak_d):
+        _sungsan_lane_compatible = True
+
+        def setup_rgb_camera(self, width, height):
+            cam_rgb = self.pipeline.create(oak_d.depthai.node.ColorCamera)
+            resolution = (
+                oak_d.depthai.ColorCameraProperties.SensorResolution.THE_1080_P
+            )
+            cam_rgb.setResolution(resolution)
+            cam_rgb.setPreviewSize(width, height)
+            cam_rgb.setInterleaved(False)
+
+            xout_rgb = self.pipeline.create(oak_d.depthai.node.XLinkOut)
+            xout_rgb.setStreamName('rgb')
+            cam_rgb.preview.link(xout_rgb.input)
+
+        def _poll(self):
+            self.frame_time = time.time() - self.start_time
+            self.frame_count += 1
+
+            if self.enable_depth:
+                if not hasattr(self, 'depth_queue'):
+                    self.depth_queue = self.oak_d_device.getOutputQueue(
+                        name='depth', maxSize=1, blocking=False
+                    )
+                self.depth_image = self.get_frame(self.depth_queue)
+
+            if self.enable_rgb:
+                if not hasattr(self, 'rgb_queue'):
+                    self.rgb_queue = self.oak_d_device.getOutputQueue(
+                        name='rgb', maxSize=1, blocking=False
+                    )
+                self.color_image = self.get_frame(self.rgb_queue)
+
+            if self.resize and (
+                    self.width != oak_d.WIDTH or self.height != oak_d.HEIGHT):
+                import cv2
+
+                if self.enable_rgb:
+                    self.color_image = cv2.resize(
+                        self.color_image,
+                        (self.width, self.height),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                if self.enable_depth:
+                    self.depth_image = cv2.resize(
+                        self.depth_image,
+                        (self.width, self.height),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+
+    oak_d.OakD = SungsanLaneOakD
+    logger.info(
+        "Applied isolated OakD RGB compatibility for DonkeyCar 5.3"
+    )
 
 
 def drive(cfg, use_joystick=False, camera_type='single', meta=None):
@@ -66,7 +114,9 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=None):
     prepare_oakd_compatibility(cfg)
     add_camera(V, cfg, camera_type)
 
-    has_input_controller = hasattr(cfg, "CONTROLLER_TYPE") and cfg.CONTROLLER_TYPE != "mock"
+    has_input_controller = bool(
+        use_joystick or getattr(cfg, 'USE_JOYSTICK_AS_DEFAULT', False)
+    )
     ctr = add_user_controller(V, cfg, use_joystick, input_image='ui/image_array')
 
     V.add(ExplodeDict(V.mem, "web/"), inputs=['web/buttons'])

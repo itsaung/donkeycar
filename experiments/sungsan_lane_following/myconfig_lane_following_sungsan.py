@@ -60,7 +60,7 @@ VESC_STEERING_OFFSET = 0.5  # Shifts the result so the final range is 0 to 1 (wh
 #   Controls tab → Servo slider to test; center wheels at ~50% slider position
 
 # ── Joystick ─────────────────────────────────────────────────────────
-USE_JOYSTICK_AS_DEFAULT = True      # Removes the need to pass --js on every launch
+USE_JOYSTICK_AS_DEFAULT = False     # Web control by default; pass --js to use the F710
 JOYSTICK_MAX_THROTTLE = 0.3         # Limit top speed during data collection for safety
 JOYSTICK_STEERING_SCALE = 1.0       # Set to -1.0 to reverse the steering direction
 AUTO_RECORD_ON_THROTTLE = True     # Record automatically when throttle is pressed; stops when throttle is zero
@@ -73,7 +73,7 @@ JOYSTICK_DEVICE_FILE = "/dev/input/js0"
 
 # ── Oak-D Specific ───────────────────────────────────────────────────
 OAKD_RGB = True         # Capture RGB images for lane-following training
-OAKD_DEPTH = True       # DonkeyCar 5.3 OakD polling expects both RGB and depth queues
+OAKD_DEPTH = False      # Lane following uses RGB only; the local driver shim honors this
 OAKD_ID = None          # None = auto-detect (works when only one camera is connected)
 
 # ── FPV Web Stream ────────────────────────────────────────────────────

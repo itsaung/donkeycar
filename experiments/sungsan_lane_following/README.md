@@ -102,6 +102,11 @@ and the green target. Switch to full `local` mode only after steering direction,
 both lane selections, and line-loss stopping have been checked at raised-wheel
 and low-speed physical tests.
 
+Web control is the default so a disconnected gamepad cannot stop the camera test.
+Pass `--js` explicitly when the F710 is connected and should be used. The drive
+entry point also applies an isolated DonkeyCar 5.3 OakD compatibility layer that
+uses the 640x480 RGB preview and never opens a disabled depth stream.
+
 ## Replay stored frames
 
 ```bash
