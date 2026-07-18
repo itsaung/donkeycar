@@ -31,6 +31,28 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+def prepare_oakd_compatibility(cfg):
+    """Work around the OakD preview-size attribute mismatch in DonkeyCar 5.3."""
+    if getattr(cfg, 'CAMERA_TYPE', None) != 'OAKD':
+        return
+
+    from donkeycar.parts import oak_d
+
+    patched = []
+    if not hasattr(oak_d.OakD, 'image_w'):
+        oak_d.OakD.image_w = oak_d.WIDTH
+        patched.append('image_w')
+    if not hasattr(oak_d.OakD, 'image_h'):
+        oak_d.OakD.image_h = oak_d.HEIGHT
+        patched.append('image_h')
+
+    if patched:
+        logger.info(
+            "Applied local OakD compatibility for DonkeyCar 5.3 (%s)",
+            ", ".join(patched),
+        )
+
+
 def drive(cfg, use_joystick=False, camera_type='single', meta=None):
     '''
     Construct a working robotic vehicle from many parts.
@@ -40,6 +62,7 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=None):
     meta = list(meta or [])
 
     add_simulator(V, cfg)
+    prepare_oakd_compatibility(cfg)
     add_camera(V, cfg, camera_type)
 
     has_input_controller = hasattr(cfg, "CONTROLLER_TYPE") and cfg.CONTROLLER_TYPE != "mock"
