@@ -73,7 +73,7 @@ JOYSTICK_DEVICE_FILE = "/dev/input/js0"
 
 # ── Oak-D Specific ───────────────────────────────────────────────────
 OAKD_RGB = True         # Capture RGB images for lane-following training
-OAKD_DEPTH = False      # Depth stream not needed for basic lane following
+OAKD_DEPTH = True       # DonkeyCar 5.3 OakD polling expects both RGB and depth queues
 OAKD_ID = None          # None = auto-detect (works when only one camera is connected)
 
 # ── FPV Web Stream ────────────────────────────────────────────────────

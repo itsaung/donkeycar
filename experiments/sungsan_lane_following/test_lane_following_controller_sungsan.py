@@ -185,6 +185,7 @@ def test_personal_config_finally_selects_lane_controller():
     assert values["WEB_CONTROL_PORT"] == 8893
     assert values["DATA_PATH"].endswith("data_lane_following_sungsan")
     assert values["CV_INPUT_COLOR_ORDER"] == "BGR"
+    assert values["OAKD_DEPTH"] is True
 
 
 def test_invalid_lane_side_is_rejected():
