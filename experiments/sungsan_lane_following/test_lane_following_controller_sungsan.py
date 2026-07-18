@@ -28,11 +28,13 @@ def make_cfg(side="left", **overrides):
         LANE_WHITE_MAX_CHANNEL_SPREAD=70,
         LANE_MIN_COMPONENT_AREA_PX=3,
         LANE_MAX_MARKING_WIDTH_PX=18,
+        LANE_WHITE_MAX_MARKING_WIDTH_PX=70,
         LANE_NOMINAL_WIDTH_PX=52,
         LANE_WIDTH_REFERENCE_Y=82,
         LANE_MIN_WIDTH_PX=20,
         LANE_MAX_WIDTH_PX=75,
         LANE_ACQUIRE_BOUNDARY_DISTANCE_PX=32,
+        LANE_CURVE_REACQUIRE_DISTANCE_PX=75,
         LANE_MAX_CENTER_JUMP_PX=30,
         LANE_MAX_BOUNDARY_JUMP_PX=30,
         LANE_MAX_BAND_CENTER_DEVIATION_PX=28,
@@ -48,6 +50,7 @@ def make_cfg(side="left", **overrides):
         THROTTLE_MAX=0.35,
         THROTTLE_STEP=0.02,
         LANE_NO_LINE_THROTTLE_STEP=0.05,
+        LANE_SINGLE_BOUNDARY_THROTTLE=0.20,
         OVERLAY_IMAGE=True,
     )
     values.update(overrides)
@@ -106,6 +109,16 @@ def shifted_lane_image(side, scale, shift_ref):
         borderMode=cv2.BORDER_CONSTANT,
         borderValue=(92, 92, 92),
     )
+
+
+def white_only_sharp_curve():
+    image = np.full((120, 160, 3), (92, 92, 92), dtype=np.uint8)
+    points = np.asarray(
+        [(0, 112), (42, 102), (88, 91), (128, 82), (159, 75)],
+        dtype=np.int32,
+    )
+    cv2.polylines(image, [points], False, (235, 235, 235), 3)
+    return image
 
 
 def test_left_lane_uses_white_left_and_yellow_right():
@@ -177,6 +190,26 @@ def test_far_yellow_candidate_cannot_replace_left_lane_divider():
     )
 
 
+def test_left_lane_reacquires_wide_white_boundary_on_sharp_curve():
+    follower = controller("left")
+    follower.run(lane_image("left"))
+    blank = np.full((120, 160, 3), (92, 92, 92), dtype=np.uint8)
+    for _ in range(5):
+        follower.run(blank)
+
+    steering, throttle, _ = follower.run(white_only_sharp_curve())
+
+    assert follower._debug["center"] is not None
+    assert follower.lost_frames == 0
+    assert follower._debug["observations"]
+    assert all(
+        item.white_x is not None and item.yellow_x is None
+        for item in follower._debug["observations"]
+    )
+    assert 0.0 < abs(steering) <= 0.20
+    assert throttle == 0.20
+
+
 def test_single_yellow_boundary_bridges_a_white_gap():
     image = lane_image("left")
     white = np.all(image == (235, 235, 235), axis=2)
@@ -234,6 +267,8 @@ def test_personal_config_finally_selects_lane_controller():
     assert values["USE_JOYSTICK_AS_DEFAULT"] is False
     assert values["LANE_YELLOW_THRESHOLD_LOW"] == (18, 45, 45)
     assert values["LANE_STEERING_LIMIT"] == 0.65
+    assert values["LANE_WHITE_MAX_MARKING_WIDTH_PX"] == 70
+    assert values["LANE_CURVE_REACQUIRE_DISTANCE_PX"] == 75
 
 
 def test_invalid_lane_side_is_rejected():

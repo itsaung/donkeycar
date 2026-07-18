@@ -92,6 +92,9 @@ class LaneFollower:
         self.max_marking_width = float(
             getattr(cfg, "LANE_MAX_MARKING_WIDTH_PX", 18)
         )
+        self.white_max_marking_width = float(
+            getattr(cfg, "LANE_WHITE_MAX_MARKING_WIDTH_PX", 70)
+        )
         self.nominal_lane_width = float(
             getattr(cfg, "LANE_NOMINAL_WIDTH_PX", 52)
         )
@@ -106,6 +109,9 @@ class LaneFollower:
         )
         self.acquire_boundary_distance = float(
             getattr(cfg, "LANE_ACQUIRE_BOUNDARY_DISTANCE_PX", 32)
+        )
+        self.curve_reacquire_boundary_distance = float(
+            getattr(cfg, "LANE_CURVE_REACQUIRE_DISTANCE_PX", 75)
         )
         self.max_center_jump = float(
             getattr(cfg, "LANE_MAX_CENTER_JUMP_PX", 30)
@@ -143,6 +149,9 @@ class LaneFollower:
         self.throttle_step = float(getattr(cfg, "THROTTLE_STEP", 0.02))
         self.no_lane_throttle_step = float(
             getattr(cfg, "LANE_NO_LINE_THROTTLE_STEP", 0.05)
+        )
+        self.single_boundary_throttle = float(
+            getattr(cfg, "LANE_SINGLE_BOUNDARY_THROTTLE", 0.20)
         )
 
         self.steering = 0.0
@@ -199,12 +208,17 @@ class LaneFollower:
         white = cv2.medianBlur(white, 3)
         return yellow, white
 
-    def _components(self, mask, sx, sy):
+    def _components(self, mask, sx, sy, max_width_ref=None):
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(
             mask, connectivity=8
         )
         min_area = max(2.0, self.min_component_area * sx * sy)
-        max_width = max(2.0, self.max_marking_width * sx)
+        width_limit = (
+            self.max_marking_width
+            if max_width_ref is None
+            else float(max_width_ref)
+        )
+        max_width = max(2.0, width_limit * sx)
         candidates = []
         for label in range(1, count):
             x, _y, w, h, area = stats[label]
@@ -329,8 +343,14 @@ class LaneFollower:
             paired = False
             confidence = 0.60
         elif white is not None:
+            reacquiring_curve = self.lost_frames >= self.reacquire_after_frames
+            acquire_distance = (
+                self.curve_reacquire_boundary_distance
+                if reacquiring_curve
+                else self.acquire_boundary_distance
+            )
             allowed = previous_white is not None or (
-                abs(white.x - expected_white) <= self.acquire_boundary_distance * sx
+                abs(white.x - expected_white) <= acquire_distance * sx
             )
             if not allowed:
                 return None
@@ -367,7 +387,12 @@ class LaneFollower:
             band = image[y0:y0 + band_h, :, :]
             yellow_mask, white_mask = self._build_masks(band)
             yellow_candidates = self._components(yellow_mask, sx, sy)
-            white_candidates = self._components(white_mask, sx, sy)
+            white_candidates = self._components(
+                white_mask,
+                sx,
+                sy,
+                max_width_ref=self.white_max_marking_width,
+            )
             band_center_ref = self.scan_y + index * self.scan_step + self.scan_height / 2
             observation = self._select_observation(
                 yellow_candidates,
@@ -490,7 +515,10 @@ class LaneFollower:
             self.steering += steering_delta
 
             sx, _ = self._scale(height, width)
-            if abs(center - target) > self.target_threshold * sx:
+            paired_boundary = any(item.paired for item in observations)
+            if not paired_boundary:
+                self.throttle = self.single_boundary_throttle
+            elif abs(center - target) > self.target_threshold * sx:
                 self.throttle = max(
                     self.throttle_min, self.throttle - self.throttle_step
                 )

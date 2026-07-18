@@ -21,6 +21,13 @@ When one boundary is briefly hidden, the controller estimates the lane centre
 from the remaining boundary and the calibrated lane width. When both boundaries
 are lost, it decelerates and stops after five frames.
 
+On a sharp curve the solid white boundary can appear almost horizontal and much
+wider inside a scan band than it does on a straight. White components therefore
+have a separate curve-aware width allowance. After a full line-loss stop, the
+controller also uses a wider white-boundary reacquisition window. RGB-only
+single-boundary curve tracking is capped at `0.20` throttle; the normal paired
+yellow/white lane keeps the regular throttle range.
+
 ## Files
 
 - `lane_following_controller_sungsan.py`: left/right lane detector and PID input
