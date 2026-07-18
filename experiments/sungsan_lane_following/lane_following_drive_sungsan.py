@@ -13,6 +13,7 @@ Options:
     --lane=side         Select left or right lane. Overrides LANE_SIDE.
 """
 import logging
+from pathlib import Path
 
 from docopt import docopt
 from simple_pid import PID
@@ -154,6 +155,7 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=None):
     inputs = ['cam/image_array', 'steering', 'throttle']
     types = ['image_array', 'float', 'float']
 
+    Path(cfg.DATA_PATH).mkdir(parents=True, exist_ok=True)
     tub_path = TubHandler(path=cfg.DATA_PATH).create_tub_path() if \
         cfg.AUTO_CREATE_NEW_TUB else cfg.DATA_PATH
     meta += getattr(cfg, 'METADATA', [])
