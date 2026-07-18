@@ -19,11 +19,11 @@ def make_cfg(side="left", **overrides):
         LANE_SCAN_HEIGHT=8,
         LANE_SCAN_COUNT=4,
         LANE_SCAN_STEP=12,
-        LANE_YELLOW_THRESHOLD_LOW=(18, 45, 45),
+        LANE_YELLOW_THRESHOLD_LOW=(18, 70, 70),
         LANE_YELLOW_THRESHOLD_HIGH=(35, 255, 255),
         LANE_WHITE_THRESHOLD_LOW=(0, 0, 135),
         LANE_WHITE_THRESHOLD_HIGH=(180, 70, 255),
-        LANE_YELLOW_MIN_DOMINANCE=15,
+        LANE_YELLOW_MIN_DOMINANCE=20,
         LANE_YELLOW_MAX_RG_DIFF=40,
         LANE_WHITE_MAX_CHANNEL_SPREAD=70,
         LANE_MIN_COMPONENT_AREA_PX=3,
@@ -41,6 +41,12 @@ def make_cfg(side="left", **overrides):
         LANE_CENTER_SMOOTHING=0.0,
         LANE_STEERING_LIMIT=0.65,
         LANE_MAX_STEERING_STEP=0.20,
+        LANE_LOOKAHEAD_Y=84,
+        LANE_MAX_BOUNDARY_SLOPE=5.0,
+        LANE_WIDTH_SMOOTHING=0.70,
+        LANE_SINGLE_BOUNDARY_HOLD_FRAMES=40,
+        LANE_ALLOW_YELLOW_ONLY=False,
+        LANE_LOCK_REQUIRED_FRAMES=3,
         LANE_NO_LINE_STOP_FRAMES=5,
         LANE_REACQUIRE_AFTER_FRAMES=5,
         TARGET_PIXEL=None,
@@ -121,15 +127,48 @@ def white_only_sharp_curve():
     return image
 
 
+def alternating_boundary_evidence():
+    image = lane_image("left")
+    for index, y0 in enumerate((68, 80, 92, 104)):
+        band = image[y0:y0 + 8]
+        if index % 2 == 0:
+            remove = (
+                (band[:, :, 0] < 20)
+                & (band[:, :, 1] > 200)
+                & (band[:, :, 2] > 200)
+            )
+        else:
+            remove = np.all(band == (235, 235, 235), axis=2)
+        band[remove] = (92, 92, 92)
+    return image
+
+
+def paired_right_curve_ahead():
+    image = np.full((120, 160, 3), (92, 92, 92), dtype=np.uint8)
+    white = np.asarray(
+        [(45, 112), (60, 96), (78, 84), (91, 72)],
+        dtype=np.int32,
+    )
+    yellow = np.asarray(
+        [(115, 112), (120, 96), (128, 84), (133, 72)],
+        dtype=np.int32,
+    )
+    cv2.polylines(image, [white], False, (235, 235, 235), 3)
+    cv2.polylines(image, [yellow], False, (0, 225, 225), 3)
+    return image
+
+
 def test_left_lane_uses_white_left_and_yellow_right():
     follower = controller("left")
-    steering, throttle, overlay = follower.run(lane_image("left"))
+    for _ in range(3):
+        steering, throttle, overlay = follower.run(lane_image("left"))
 
     assert follower._debug["center"] is not None
     assert abs(follower._debug["center"] - 80) < 6
     assert any(item.paired for item in follower._debug["observations"])
     assert abs(steering) < 0.1
-    assert throttle > 0.25
+    assert 0.0 < throttle <= 0.25
+    assert follower.drive_locked
     assert overlay.shape == (120, 160, 3)
 
 
@@ -181,18 +220,17 @@ def test_far_yellow_candidate_cannot_replace_left_lane_divider():
     cv2.line(image, (145, 42), (150, 119), (30, 180, 180), 3)
 
     follower = controller("left")
-    follower.run(image)
+    _, throttle, _ = follower.run(image)
 
-    assert follower._debug["center"] is not None
-    assert follower._debug["center"] < 90
-    assert all(
-        item.yellow_x is None for item in follower._debug["observations"]
-    )
+    assert follower._debug["center"] is None
+    assert throttle == 0.0
+    assert not follower.drive_locked
 
 
 def test_left_lane_reacquires_wide_white_boundary_on_sharp_curve():
     follower = controller("left")
-    follower.run(lane_image("left"))
+    for _ in range(3):
+        follower.run(lane_image("left"))
     blank = np.full((120, 160, 3), (92, 92, 92), dtype=np.uint8)
     for _ in range(5):
         follower.run(blank)
@@ -210,15 +248,73 @@ def test_left_lane_reacquires_wide_white_boundary_on_sharp_curve():
     assert 0.0 < throttle <= 0.20
 
 
-def test_single_yellow_boundary_bridges_a_white_gap():
+def test_yellow_only_scene_does_not_drive_without_white_boundary():
     image = lane_image("left")
     white = np.all(image == (235, 235, 235), axis=2)
     image[white] = (92, 92, 92)
     follower = controller("left")
-    follower.run(image)
+    _, throttle, _ = follower.run(image)
+
+    assert follower._debug["center"] is None
+    assert throttle == 0.0
+    assert not follower.drive_locked
+
+
+def test_recent_lock_still_refuses_yellow_only_ground_evidence():
+    follower = controller("left")
+    for _ in range(3):
+        follower.run(lane_image("left"))
+    image = np.full((120, 160, 3), (92, 92, 92), dtype=np.uint8)
+    cv2.line(image, (100, 68), (125, 119), (20, 190, 190), 4)
+
+    _, throttle, _ = follower.run(image)
+
+    assert follower._debug["center"] is None
+    assert follower._debug["model_mode"] == "none"
+    assert throttle == 0.0
+
+
+def test_recent_dual_lock_bridges_a_yellow_gap_with_white_track():
+    follower = controller("left")
+    for _ in range(3):
+        follower.run(lane_image("left"))
+    image = lane_image("left")
+    yellow = (
+        (image[:, :, 0] < 20)
+        & (image[:, :, 1] > 200)
+        & (image[:, :, 2] > 200)
+    )
+    image[yellow] = (92, 92, 92)
+
+    _, throttle, _ = follower.run(image)
 
     assert follower._debug["center"] is not None
-    assert all(not item.paired for item in follower._debug["observations"])
+    assert follower._debug["model_mode"] == "single-white-track"
+    assert follower.drive_locked
+    assert 0.0 < throttle <= 0.20
+
+
+def test_cross_band_white_and_yellow_form_one_dual_lane_model():
+    follower = controller("left")
+    image = alternating_boundary_evidence()
+    for _ in range(3):
+        _, throttle, _ = follower.run(image)
+
+    assert not any(item.paired for item in follower._debug["observations"])
+    assert follower._debug["model_mode"] == "dual-tracks"
+    assert follower._debug["center"] is not None
+    assert abs(follower._debug["center"] - 80) < 10
+    assert follower.drive_locked
+    assert throttle > 0.0
+
+
+def test_lookahead_center_anticipates_a_right_curve():
+    follower = controller("left")
+    steering, _, _ = follower.run(paired_right_curve_ahead())
+
+    assert follower._debug["model_mode"] == "dual-paired"
+    assert follower._debug["center"] > 98
+    assert steering > 0.0
 
 
 def test_missing_lane_decelerates_then_stops_safely():
@@ -265,10 +361,13 @@ def test_personal_config_finally_selects_lane_controller():
     assert values["CV_INPUT_COLOR_ORDER"] == "BGR"
     assert values["OAKD_DEPTH"] is False
     assert values["USE_JOYSTICK_AS_DEFAULT"] is False
-    assert values["LANE_YELLOW_THRESHOLD_LOW"] == (18, 45, 45)
+    assert values["LANE_YELLOW_THRESHOLD_LOW"] == (18, 70, 70)
     assert values["LANE_STEERING_LIMIT"] == 0.65
     assert values["LANE_WHITE_MAX_MARKING_WIDTH_PX"] == 70
     assert values["LANE_CURVE_REACQUIRE_DISTANCE_PX"] == 75
+    assert values["LANE_LOOKAHEAD_Y"] == 84
+    assert values["LANE_ALLOW_YELLOW_ONLY"] is False
+    assert values["LANE_LOCK_REQUIRED_FRAMES"] == 3
 
 
 def test_invalid_lane_side_is_rejected():

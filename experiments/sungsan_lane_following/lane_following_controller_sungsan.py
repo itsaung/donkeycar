@@ -61,7 +61,7 @@ class LaneFollower:
         self.scan_step = int(getattr(cfg, "LANE_SCAN_STEP", 15))
 
         self.yellow_lo = np.asarray(
-            getattr(cfg, "LANE_YELLOW_THRESHOLD_LOW", (18, 18, 35)),
+            getattr(cfg, "LANE_YELLOW_THRESHOLD_LOW", (18, 70, 70)),
             dtype=np.uint8,
         )
         self.yellow_hi = np.asarray(
@@ -77,7 +77,7 @@ class LaneFollower:
             dtype=np.uint8,
         )
         self.yellow_min_dominance = int(
-            getattr(cfg, "LANE_YELLOW_MIN_DOMINANCE", 8)
+            getattr(cfg, "LANE_YELLOW_MIN_DOMINANCE", 20)
         )
         self.yellow_max_rg_diff = int(
             getattr(cfg, "LANE_YELLOW_MAX_RG_DIFF", 35)
@@ -125,6 +125,24 @@ class LaneFollower:
         self.center_smoothing = float(
             getattr(cfg, "LANE_CENTER_SMOOTHING", 0.35)
         )
+        self.lookahead_y = float(
+            getattr(cfg, "LANE_LOOKAHEAD_Y", 84)
+        )
+        self.max_boundary_slope = float(
+            getattr(cfg, "LANE_MAX_BOUNDARY_SLOPE", 5.0)
+        )
+        self.single_boundary_hold_frames = int(
+            getattr(cfg, "LANE_SINGLE_BOUNDARY_HOLD_FRAMES", 40)
+        )
+        self.allow_yellow_only = bool(
+            getattr(cfg, "LANE_ALLOW_YELLOW_ONLY", False)
+        )
+        self.lane_width_smoothing = float(
+            getattr(cfg, "LANE_WIDTH_SMOOTHING", 0.70)
+        )
+        self.lock_required_frames = int(
+            getattr(cfg, "LANE_LOCK_REQUIRED_FRAMES", 3)
+        )
         self.steering_limit = float(
             getattr(cfg, "LANE_STEERING_LIMIT", 0.65)
         )
@@ -161,6 +179,11 @@ class LaneFollower:
         self.last_yellow_by_band = {}
         self.last_white_by_band = {}
         self.lost_frames = 0
+        self.last_lane_width_ref = None
+        self.frames_since_dual = self.single_boundary_hold_frames + 1
+        self.dual_lock_streak = 0
+        self.drive_locked = False
+        self._model_mode = "none"
         self._debug = {}
 
     def _scale(self, height, width):
@@ -377,6 +400,77 @@ class LaneFollower:
             weight=closeness_weight,
         )
 
+    def _fit_boundary(self, points, eval_y):
+        """Fit x=f(y) and evaluate a boundary at one shared lookahead row."""
+        if not points:
+            return None
+        if len(points) == 1:
+            y, x, weight = points[0]
+            return {
+                "count": 1,
+                "point_y": float(y),
+                "point_x": float(x),
+                "slope": None,
+                "x": None,
+                "weight": float(weight),
+            }
+
+        ys = np.asarray([item[0] for item in points], dtype=np.float64)
+        xs = np.asarray([item[1] for item in points], dtype=np.float64)
+        weights = np.sqrt(np.asarray(
+            [max(0.01, item[2]) for item in points],
+            dtype=np.float64,
+        ))
+        if float(np.ptp(ys)) < 1.0:
+            return None
+        slope, intercept = np.polyfit(ys, xs, 1, w=weights)
+        if abs(float(slope)) > self.max_boundary_slope:
+            return None
+        return {
+            "count": len(points),
+            "point_y": float(np.average(ys, weights=weights)),
+            "point_x": float(np.average(xs, weights=weights)),
+            "slope": float(slope),
+            "x": float(slope * eval_y + intercept),
+            "weight": float(weights.sum()),
+        }
+
+    @staticmethod
+    def _evaluate_boundary(model, eval_y, companion_slope=None):
+        if model is None:
+            return None
+        if model["x"] is not None:
+            return float(model["x"])
+        if companion_slope is None:
+            return None
+        return float(
+            model["point_x"]
+            + companion_slope * (eval_y - model["point_y"])
+        )
+
+    def _width_limits(self, lookahead_ref, sx):
+        nominal_ref = self._nominal_width(lookahead_ref)
+        min_width = max(
+            self.min_lane_width,
+            nominal_ref * 0.55,
+        ) * sx
+        max_width = min(
+            self.max_lane_width,
+            nominal_ref * 1.55,
+        ) * sx
+        return nominal_ref, min_width, max_width
+
+    def _remember_lane_width(self, width_ref):
+        if self.last_lane_width_ref is None:
+            self.last_lane_width_ref = float(width_ref)
+        else:
+            keep = float(np.clip(self.lane_width_smoothing, 0.0, 0.95))
+            self.last_lane_width_ref = (
+                keep * self.last_lane_width_ref
+                + (1.0 - keep) * float(width_ref)
+            )
+        self.frames_since_dual = 0
+
     def _detect(self, image, target):
         height, width = image.shape[:2]
         sx, sy = self._scale(height, width)
@@ -409,39 +503,131 @@ class LaneFollower:
             debug_bands.append((y0, band_h, yellow_mask, white_mask))
 
         if not observations:
+            self._model_mode = "none"
             return None, 0.0, observations, debug_bands
 
-        spread = self.max_band_center_deviation * sx
-        best_anchor = max(
-            observations,
-            key=lambda anchor: sum(
-                item.weight
-                for item in observations
-                if abs(item.center_x - anchor.center_x) <= spread
-            ),
+        lookahead_ref = float(np.clip(self.lookahead_y, 0.0, self.ref_h - 1.0))
+        lookahead_y = lookahead_ref * sy
+        nominal_ref, min_width, max_width = self._width_limits(
+            lookahead_ref,
+            sx,
         )
-        trusted = [
-            item
+        white_points = [
+            (item.y, item.white_x, item.weight)
             for item in observations
-            if abs(item.center_x - best_anchor.center_x) <= spread
+            if item.white_x is not None
         ]
-        weights = np.asarray([item.weight for item in trusted], dtype=np.float64)
-        centers = np.asarray([item.center_x for item in trusted], dtype=np.float64)
-        center = float(np.average(centers, weights=weights))
-        confidence = float(
-            np.average(
-                np.asarray([item.confidence for item in trusted]),
-                weights=weights,
+        yellow_points = [
+            (item.y, item.yellow_x, item.weight)
+            for item in observations
+            if item.yellow_x is not None
+        ]
+        paired = [item for item in observations if item.paired]
+        white_model = self._fit_boundary(white_points, lookahead_y)
+        yellow_model = self._fit_boundary(yellow_points, lookahead_y)
+
+        center = None
+        confidence = 0.0
+        width_ref_to_remember = None
+        model_mode = "none"
+
+        if len(paired) >= 2:
+            center_model = self._fit_boundary(
+                [(item.y, item.center_x, item.weight) for item in paired],
+                lookahead_y,
             )
+            if center_model is not None and center_model["x"] is not None:
+                center = float(center_model["x"])
+                widths_ref = []
+                for item in paired:
+                    observed_ref_y = item.y / sy
+                    observed_width_ref = abs(
+                        item.yellow_x - item.white_x
+                    ) / sx
+                    observed_nominal = self._nominal_width(observed_ref_y)
+                    widths_ref.append(
+                        observed_width_ref
+                        * nominal_ref
+                        / max(1.0, observed_nominal)
+                    )
+                width_ref_to_remember = float(np.median(widths_ref))
+                confidence = 1.0
+                model_mode = "dual-paired"
+
+        if center is None and white_model is not None and yellow_model is not None:
+            white_x = self._evaluate_boundary(
+                white_model,
+                lookahead_y,
+                yellow_model["slope"],
+            )
+            yellow_x = self._evaluate_boundary(
+                yellow_model,
+                lookahead_y,
+                white_model["slope"],
+            )
+            if white_x is not None and yellow_x is not None:
+                lane_width = (
+                    yellow_x - white_x
+                    if self.lane_side == "left"
+                    else white_x - yellow_x
+                )
+                if min_width <= lane_width <= max_width:
+                    center = (white_x + yellow_x) / 2.0
+                    width_ref_to_remember = lane_width / sx
+                    confidence = 0.85
+                    model_mode = "dual-tracks"
+
+        if center is None and len(paired) == 1:
+            item = paired[0]
+            center = float(item.center_x)
+            observed_ref_y = item.y / sy
+            observed_width_ref = abs(item.yellow_x - item.white_x) / sx
+            width_ref_to_remember = (
+                observed_width_ref
+                * nominal_ref
+                / max(1.0, self._nominal_width(observed_ref_y))
+            )
+            confidence = 0.75
+            model_mode = "dual-paired-one"
+
+        recent_dual_lock = (
+            self.drive_locked
+            and self.last_lane_width_ref is not None
+            and self.frames_since_dual <= self.single_boundary_hold_frames
         )
+        if center is None and recent_dual_lock:
+            lane_width = self.last_lane_width_ref * sx
+            direction = -1.0 if self.lane_side == "left" else 1.0
+            white_x = self._evaluate_boundary(white_model, lookahead_y)
+            yellow_x = self._evaluate_boundary(yellow_model, lookahead_y)
+            if white_x is not None and white_model["count"] >= 2:
+                center = white_x - direction * lane_width / 2.0
+                confidence = 0.50
+                model_mode = "single-white-track"
+            elif (
+                self.allow_yellow_only
+                and yellow_x is not None
+                and yellow_model["count"] >= 2
+            ):
+                center = yellow_x + direction * lane_width / 2.0
+                confidence = 0.50
+                model_mode = "single-yellow-track"
+
+        if center is None or not 0.0 <= center < width:
+            self._model_mode = "none"
+            return None, 0.0, observations, debug_bands
 
         if self.last_center is not None:
             if abs(center - self.last_center) > self.max_center_jump * sx:
-                return None, 0.0, trusted, debug_bands
+                self._model_mode = "none"
+                return None, 0.0, observations, debug_bands
             keep = float(np.clip(self.center_smoothing, 0.0, 0.95))
             center = (1.0 - keep) * center + keep * self.last_center
 
-        return center, confidence, trusted, debug_bands
+        if width_ref_to_remember is not None:
+            self._remember_lane_width(width_ref_to_remember)
+        self._model_mode = model_mode
+        return center, confidence, observations, debug_bands
 
     def _pid_coordinate(self, x, width):
         if width:
@@ -474,10 +660,26 @@ class LaneFollower:
             if self.target_pixel_cfg is None
             else float(self.target_pixel_cfg) * width / self.ref_w
         )
+        self.frames_since_dual = min(100000, self.frames_since_dual + 1)
         center, confidence, observations, debug_bands = self._detect(cam_img, target)
+
+        dual_model = self._model_mode.startswith("dual-")
+        if dual_model:
+            if not self.drive_locked:
+                self.dual_lock_streak += 1
+                if self.dual_lock_streak >= self.lock_required_frames:
+                    self.drive_locked = True
+            else:
+                self.dual_lock_streak = self.lock_required_frames
+        else:
+            self.dual_lock_streak = 0
+        if self.frames_since_dual > self.single_boundary_hold_frames:
+            self.drive_locked = False
 
         if center is None:
             self._handle_missing()
+            if not self.drive_locked:
+                self.throttle = 0.0
             if self.lost_frames in {1, self.no_lane_stop_frames}:
                 logger.info(
                     "LaneFollower: lane lost side=%s frames=%d",
@@ -515,16 +717,24 @@ class LaneFollower:
             self.steering += steering_delta
 
             sx, _ = self._scale(height, width)
-            paired_boundary = any(item.paired for item in observations)
-            if not paired_boundary:
+            if not self.drive_locked:
+                self.throttle = 0.0
+            elif self._model_mode.startswith("single-"):
                 self.throttle = min(
                     self.single_boundary_throttle,
                     self.throttle + self.throttle_step,
                 )
             elif abs(center - target) > self.target_threshold * sx:
-                self.throttle = max(
-                    self.throttle_min, self.throttle - self.throttle_step
-                )
+                if self.throttle < self.throttle_min:
+                    self.throttle = min(
+                        self.throttle_min,
+                        self.throttle + self.throttle_step,
+                    )
+                else:
+                    self.throttle = max(
+                        self.throttle_min,
+                        self.throttle - self.throttle_step,
+                    )
             else:
                 self.throttle = min(
                     self.throttle_max, self.throttle + self.throttle_step
@@ -537,6 +747,9 @@ class LaneFollower:
             "observations": observations,
             "bands": debug_bands,
             "lost_frames": self.lost_frames,
+            "model_mode": self._model_mode,
+            "drive_locked": self.drive_locked,
+            "frames_since_dual": self.frames_since_dual,
         }
         output = self.overlay_display(cam_img) if self.overlay_image else cam_img
         return self.steering, self.throttle, output
@@ -635,6 +848,31 @@ class LaneFollower:
             image,
             detail,
             (8, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        safety = (
+            f"MODEL:{debug.get('model_mode', 'none')} "
+            f"LOCK:{int(bool(debug.get('drive_locked', False)))} "
+            f"DUAL_AGE:{debug.get('frames_since_dual', 0)}"
+        )
+        cv2.putText(
+            image,
+            safety,
+            (8, 54),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            safety,
+            (8, 54),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
             (255, 255, 255),

@@ -12,10 +12,13 @@ yellow divider on one side and a solid white line on the other:
 - `left`: white boundary on the left, yellow divider on the right
 - `right`: yellow divider on the left, white boundary on the right
 
-The controller detects markings in four perspective bands, rejects implausible
-lane widths and sudden jumps, and uses the selected lane midpoint for PID
-steering. The blue rectangular tape is ignored because it satisfies neither the
-physical-yellow nor low-saturation-white tests.
+The controller detects markings in four perspective bands and fits a white and
+yellow boundary track across those bands. The two tracks are evaluated at one
+shared lookahead row, so dashed yellow and solid white evidence from different
+heights can still define the selected lane centre. Implausible lane widths,
+sudden jumps, and brown low-saturation ground evidence are rejected. The blue
+rectangular tape satisfies neither the physical-yellow nor low-saturation-white
+tests.
 
 When one boundary is briefly hidden, the controller estimates the lane centre
 from the remaining boundary and the calibrated lane width. When both boundaries
@@ -23,10 +26,12 @@ are lost, it decelerates and stops after five frames.
 
 On a sharp curve the solid white boundary can appear almost horizontal and much
 wider inside a scan band than it does on a straight. White components therefore
-have a separate curve-aware width allowance. After a full line-loss stop, the
-controller also uses a wider white-boundary reacquisition window. RGB-only
-single-boundary curve tracking is capped at `0.20` throttle; the normal paired
-yellow/white lane keeps the regular throttle range.
+have a separate curve-aware width allowance. Autonomous throttle stays at zero
+until a dual-boundary model is valid for three consecutive frames. After that
+lock, a fitted solid-white track may bridge a short yellow gap using the most
+recent measured lane width, capped at `0.20` throttle. Yellow-only evidence is
+never allowed to drive, and the single-boundary permission expires after 40
+frames without renewed dual-boundary evidence.
 
 ## Files
 
@@ -110,9 +115,13 @@ both lane selections, and line-loss stopping have been checked at raised-wheel
 and low-speed physical tests.
 
 The second overlay line reports the detected centre, camera target, number of
-paired yellow/white scan bands, and the steering error normalized to the 160px
-PID reference. If yellow points appear on a wall or the opposite outer white
-line, return to `user` mode immediately and capture the overlay before tuning.
+same-band yellow/white pairs, and the steering error normalized to the 160px PID
+reference. The third line reports the cross-band model, drive lock, and age of
+the last dual-boundary model. `MODEL:dual-tracks` is valid even when `PAIRS:0`
+because it fits white and yellow tracks from different scan heights. A lone dot
+must produce `MODEL:none`, `LOCK:0`, and zero autonomous throttle. If yellow
+points appear on gravel, a wall, or the opposite outer white line, return to
+`user` mode immediately and capture the overlay before tuning.
 
 Web control is the default so a disconnected gamepad cannot stop the camera test.
 Pass `--js` explicitly when the F710 is connected and should be used. The drive
