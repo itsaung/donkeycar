@@ -69,6 +69,21 @@ class LineFollower:
             cfg, 'MIN_LINE_ASPECT_RATIO', 0.55
         ))
         self.min_line_area = float(getattr(cfg, 'MIN_LINE_AREA_PX', 6.0))
+        self.min_tape_quality = float(getattr(
+            cfg, 'MIN_TAPE_QUALITY', 0.0
+        ))
+        self.tape_width_reference = max(1.0, float(getattr(
+            cfg, 'TAPE_WIDTH_REFERENCE_PX', 9.0
+        )))
+        self.tape_area_reference = max(1.0, float(getattr(
+            cfg, 'TAPE_AREA_REFERENCE_PX', 18.0
+        )))
+        self.tape_saturation_reference = max(1.0, float(getattr(
+            cfg, 'TAPE_SATURATION_REFERENCE', 90.0
+        )))
+        self.tape_value_reference = max(1.0, float(getattr(
+            cfg, 'TAPE_VALUE_REFERENCE', 220.0
+        )))
         self.mask_kernel = max(
             1, int(getattr(cfg, 'MASK_MORPH_KERNEL_PX', 1))
         )
@@ -78,6 +93,24 @@ class LineFollower:
         self.acquire_max_distance = float(getattr(
             cfg, 'ACQUIRE_MAX_DISTANCE_PX', self.max_line_jump
         ))
+        self.min_tracked_size_ratio = float(np.clip(
+            getattr(cfg, 'MIN_TRACKED_SIZE_RATIO', 0.0), 0.0, 1.0
+        ))
+        self.velocity_alpha = float(np.clip(
+            getattr(cfg, 'LINE_VELOCITY_SMOOTHING', 0.5), 0.0, 1.0
+        ))
+        self.prediction_frames = max(0.0, float(getattr(
+            cfg, 'LINE_PREDICTION_FRAMES', 0.0
+        )))
+        self.max_predicted_shift = max(0.0, float(getattr(
+            cfg, 'MAX_PREDICTED_SHIFT_PX', self.max_line_jump
+        )))
+        self.velocity_decay = float(np.clip(
+            getattr(cfg, 'LINE_VELOCITY_DECAY', 0.8), 0.0, 1.0
+        ))
+        self.side_reversal_margin = max(0.0, float(getattr(
+            cfg, 'SIDE_REVERSAL_MARGIN_PX', 0.0
+        )))
         self.reacquire_after = max(
             1, int(getattr(cfg, 'REACQUIRE_LINE_AFTER_FRAMES', 5))
         )
@@ -98,6 +131,9 @@ class LineFollower:
         ))
         self.no_line_count = 0
         self.previous_line_x = None
+        self.previous_component_width_ref = None
+        self.previous_component_area_ref = None
+        self.line_velocity = 0.0
         self.selected_scan_y = None
 
         self.pid_st = pid
@@ -191,7 +227,7 @@ class LineFollower:
         ))
 
     def _component_candidates(
-            self, mask, scan_y, frame_height, frame_width):
+            self, mask, band_img, scan_y, frame_height, frame_width):
         max_width = self._max_runtime_line_width(frame_width)
         scale_x, scale_y = self._runtime_scales(
             frame_height, frame_width
@@ -201,6 +237,10 @@ class LineFollower:
         )
         component_count, labels, stats, centroids = \
             cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if self.input_color_order == 'BGR':
+            hsv = cv2.cvtColor(band_img, cv2.COLOR_BGR2HSV)
+        else:
+            hsv = cv2.cvtColor(band_img, cv2.COLOR_RGB2HSV)
         candidates = []
         for label in range(1, component_count):
             x, component_y, component_w, component_h, area = stats[label]
@@ -219,11 +259,38 @@ class LineFollower:
             if confidence < self.confidence_threshold:
                 continue
 
+            component_pixels = labels == label
+            mean_saturation = float(np.mean(hsv[:, :, 1][component_pixels]))
+            mean_value = float(np.mean(hsv[:, :, 2][component_pixels]))
+            width_ref = float(component_w) / float(max(scale_x, 1e-6))
+            area_ref = float(area) / float(max(scale_x * scale_y, 1e-6))
+            width_score = min(1.0, width_ref / self.tape_width_reference)
+            area_score = min(1.0, area_ref / self.tape_area_reference)
+            saturation_score = min(
+                1.0, mean_saturation / self.tape_saturation_reference
+            )
+            value_score = min(
+                1.0, mean_value / self.tape_value_reference
+            )
+            tape_quality = (
+                0.45 * width_score +
+                0.40 * area_score +
+                0.10 * saturation_score +
+                0.05 * value_score
+            )
+            if tape_quality < self.min_tape_quality:
+                continue
+
             candidates.append({
                 'x': int(round(float(centroids[label][0]))),
                 'scan_y': scan_y,
                 'area': int(area),
                 'height': int(component_h),
+                'width_ref': width_ref,
+                'area_ref': area_ref,
+                'tape_quality': tape_quality,
+                'mean_saturation': mean_saturation,
+                'mean_value': mean_value,
                 'bottom_y': int(scan_y + component_y + component_h),
                 'confidence': confidence,
                 'label': label,
@@ -246,7 +313,14 @@ class LineFollower:
             self.previous_line_x is not None and
             self.no_line_count < self.reacquire_after
         )
-        expected_x = self.previous_line_x if tracking else self.target_pixel
+        expected_x = self.target_pixel
+        if tracking:
+            predicted_shift = float(np.clip(
+                self.line_velocity * self.prediction_frames,
+                -self.max_predicted_shift * scale_x,
+                self.max_predicted_shift * scale_x,
+            ))
+            expected_x = self.previous_line_x + predicted_shift
 
         best = None
         for candidate in candidates:
@@ -255,6 +329,30 @@ class LineFollower:
                 continue
             if not tracking and distance > acquire_limit:
                 continue
+
+            if tracking and self.side_reversal_margin > 0.0:
+                reversal_margin = self.side_reversal_margin * scale_x
+                previous_offset = self.previous_line_x - self.target_pixel
+                candidate_offset = candidate['x'] - self.target_pixel
+                crossed_sides = previous_offset * candidate_offset < 0.0
+                if (crossed_sides and
+                        abs(previous_offset) > reversal_margin and
+                        abs(candidate_offset) > reversal_margin):
+                    continue
+
+            if (tracking and self.min_tracked_size_ratio > 0.0 and
+                    self.previous_component_width_ref is not None and
+                    self.previous_component_area_ref is not None):
+                width_too_small = candidate['width_ref'] < (
+                    self.previous_component_width_ref *
+                    self.min_tracked_size_ratio
+                )
+                area_too_small = candidate['area_ref'] < (
+                    self.previous_component_area_ref *
+                    self.min_tracked_size_ratio
+                )
+                if width_too_small and area_too_small:
+                    continue
 
             distance_limit = jump_limit if tracking else acquire_limit
             proximity = max(0.0, 1.0 - distance / distance_limit)
@@ -266,10 +364,11 @@ class LineFollower:
                 max(1, frame_height)
             )
             score = (
-                0.75 * proximity +
-                1.5 * candidate['confidence'] +
+                1.25 * proximity +
+                1.0 * candidate['confidence'] +
                 0.5 * height_score +
-                3.0 * road_depth
+                1.5 * candidate['tape_quality'] +
+                1.25 * road_depth
             )
             ranked = (score, candidate['area'], candidate)
             if best is None or ranked[:2] > best[:2]:
@@ -290,7 +389,7 @@ class LineFollower:
                 continue
             band_mask = self._build_mask(band, height, width)
             candidates.extend(self._component_candidates(
-                band_mask, scan_y, height, width
+                band_mask, band, scan_y, height, width
             ))
 
         selected_mask = np.zeros((height, width), dtype=np.uint8)
@@ -306,14 +405,26 @@ class LineFollower:
         selected_mask[selected_y:selected_y + band_h] = selected_component
 
         raw_x = float(selected['x'])
-        if self.previous_line_x is None:
+        tracking_before_selection = (
+            self.previous_line_x is not None and
+            self.no_line_count < self.reacquire_after
+        )
+        if not tracking_before_selection:
             filtered_x = raw_x
+            self.line_velocity = 0.0
         else:
+            observed_velocity = raw_x - self.previous_line_x
+            self.line_velocity = (
+                self.velocity_alpha * observed_velocity +
+                (1.0 - self.velocity_alpha) * self.line_velocity
+            )
             alpha = self.line_position_alpha
             filtered_x = (
                 alpha * raw_x + (1.0 - alpha) * self.previous_line_x
             )
         self.previous_line_x = filtered_x
+        self.previous_component_width_ref = selected['width_ref']
+        self.previous_component_area_ref = selected['area_ref']
         self.selected_scan_y = selected_y
         return (
             int(round(filtered_x)),
@@ -360,6 +471,7 @@ class LineFollower:
                 )
         else:
             self.no_line_count += 1
+            self.line_velocity *= self.velocity_decay
             self.throttle = max(
                 0.0, self.throttle - self.no_line_throttle_step
             )

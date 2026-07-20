@@ -16,7 +16,9 @@ def load_module(name, path):
 
 line_follower = load_module(
     "line_following_controller_sungsan",
-    str(Path(__file__).with_name("line_following_controller_sungsan.py")),
+    str(Path(__file__).with_name(
+        "line_following_controller_sungsan.py"
+    )),
 )
 
 
@@ -42,9 +44,20 @@ def make_cfg(**overrides):
         MAX_LINE_WIDTH_PX=25,
         MIN_LINE_ASPECT_RATIO=0.15,
         MIN_LINE_AREA_PX=6,
+        MIN_TAPE_QUALITY=0.55,
+        TAPE_WIDTH_REFERENCE_PX=9,
+        TAPE_AREA_REFERENCE_PX=18,
+        TAPE_SATURATION_REFERENCE=90,
+        TAPE_VALUE_REFERENCE=220,
         MASK_MORPH_KERNEL_PX=1,
-        MAX_LINE_JUMP_PX=25,
-        ACQUIRE_MAX_DISTANCE_PX=30,
+        MAX_LINE_JUMP_PX=40,
+        ACQUIRE_MAX_DISTANCE_PX=75,
+        MIN_TRACKED_SIZE_RATIO=0.45,
+        LINE_VELOCITY_SMOOTHING=0.5,
+        LINE_PREDICTION_FRAMES=2.0,
+        MAX_PREDICTED_SHIFT_PX=18,
+        LINE_VELOCITY_DECAY=0.8,
+        SIDE_REVERSAL_MARGIN_PX=8,
         REACQUIRE_LINE_AFTER_FRAMES=5,
         LINE_POSITION_SMOOTHING=0.65,
         THROTTLE_INITIAL=0.25,
@@ -81,13 +94,54 @@ def test_prefers_deeper_curve_dash_over_centered_far_dash():
     assert confidence >= 0.20
 
 
-def test_rejects_gray_cyan_and_far_initial_candidate():
+def test_rejects_gray_cyan_and_small_yellow_leaf():
     image = np.full((120, 160, 3), 90, dtype=np.uint8)
     image[70:98, 76:84] = (120, 120, 120)
     image[70:98, 88:96] = bgr_from_hsv(90, 120, 180)
-    image[70:98, 140:148] = bgr_from_hsv(25, 110, 220)
+    image[104:107, 92:95] = bgr_from_hsv(25, 110, 220)
 
     line_x, confidence, _mask = controller().get_i_color(image)
+
+    assert line_x == 0
+    assert confidence == 0.0
+
+
+def test_prefers_far_curve_tape_over_small_near_leaf():
+    yellow = bgr_from_hsv(25, 110, 220)
+    control = controller()
+
+    first = np.full((120, 160, 3), 90, dtype=np.uint8)
+    first[98:108, 84:96] = yellow
+    control.get_i_color(first)
+
+    second = np.full((120, 160, 3), 90, dtype=np.uint8)
+    second[96:106, 100:112] = yellow
+    control.get_i_color(second)
+
+    curve = np.full((120, 160, 3), 90, dtype=np.uint8)
+    curve[104:107, 92:95] = yellow  # small yellow leaf near center
+    curve[88:97, 135:151] = yellow  # real dash on the sharp right curve
+
+    line_x, confidence, _mask = control.get_i_color(curve)
+
+    # The selected raw dash is centered near x=143; position smoothing keeps
+    # the control output from jumping there in a single frame.
+    assert 120 <= line_x <= 140
+    assert confidence >= 0.20
+
+
+def test_does_not_reverse_from_right_curve_to_left_leaf():
+    yellow = bgr_from_hsv(25, 110, 220)
+    control = controller()
+
+    line = np.full((120, 160, 3), 90, dtype=np.uint8)
+    line[96:108, 105:121] = yellow
+    control.get_i_color(line)
+
+    left_leaf = np.full((120, 160, 3), 90, dtype=np.uint8)
+    left_leaf[96:104, 45:57] = yellow
+
+    line_x, confidence, _mask = control.get_i_color(left_leaf)
 
     assert line_x == 0
     assert confidence == 0.0

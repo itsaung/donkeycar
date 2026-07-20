@@ -6,11 +6,12 @@ DonkeyCar. It does not replace the team's shared `myconfig.py`,
 
 ## Directory layout
 
-- `vehicle_tested/` preserves the controller and configuration from the
+- `vehicle_tested/` started from the controller and configuration used in the
   successful physical-car test on July 17, 2026. On July 20, its personal
-  launcher was updated to isolate the stable DonkeyCar 5.3.0 package from a
-  conflicting local 5.3.dev1 checkout. The launcher update passed a 40-frame
-  OAK-D test with a mock drivetrain; it did not change the vision behavior.
+  launcher was updated to isolate stable DonkeyCar 5.3.0, and its controller
+  received the leaf-safe sharp-curve update described below. Both updates
+  passed 40-frame OAK-D tests with a mock drivetrain. The leaf-safe update
+  still requires a final physical pass through the affected curve.
 - `experimental_debug_capture/` starts from the same controller and settings,
   then adds asynchronous diagnostic image capture. Its unit tests pass, but
   this capture-enabled variant has not yet completed a physical driving test.
@@ -31,6 +32,27 @@ The preserved configuration includes:
 - deeper-road candidate preference for curves
 - smoothed line position and safe stopping after five missed frames
 - physically tested PID and throttle settings
+
+## July 20 leaf-safe sharp-curve update
+
+Daylight screenshots showed that yellow leaves near the center of the image
+could outscore the real tape when the tape moved far right on a sharp curve.
+The update adds:
+
+- tape-quality scoring based on component width, area, saturation, and value
+- a wider acquisition window for the real tape on sharp curves
+- short-horizon line-motion prediction
+- rejection of sudden opposite-side candidate jumps
+- rejection of abrupt transitions from a tracked dash to a much smaller blob
+- a lower near-road score weight so proximity to the camera alone cannot make
+  a leaf win
+
+Six synthetic-image tests pass, including small-leaf rejection, far-curve
+tape selection, steering-side reversal protection, BGR overlay conversion,
+and safe stopping. A known-good daylight screenshot also continues to select
+the same tape component. This evidence is motor-free; complete a wheels-up
+check and then a controlled pass through the affected curve before treating
+the leaf-safe update as physically track-validated.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 
