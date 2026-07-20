@@ -6,8 +6,11 @@ DonkeyCar. It does not replace the team's shared `myconfig.py`,
 
 ## Directory layout
 
-- `vehicle_tested/` is an exact copy of the three personal files that were on
-  `/home/pi/mycar` after the successful physical-car test on July 17, 2026.
+- `vehicle_tested/` preserves the controller and configuration from the
+  successful physical-car test on July 17, 2026. On July 20, its personal
+  launcher was updated to isolate the stable DonkeyCar 5.3.0 package from a
+  conflicting local 5.3.dev1 checkout. The launcher update passed a 40-frame
+  OAK-D test with a mock drivetrain; it did not change the vision behavior.
 - `experimental_debug_capture/` starts from the same controller and settings,
   then adds asynchronous diagnostic image capture. Its unit tests pass, but
   this capture-enabled variant has not yet completed a physical driving test.
@@ -17,6 +20,8 @@ DonkeyCar. It does not replace the team's shared `myconfig.py`,
 The preserved configuration includes:
 
 - OAK-D input treated as BGR (`CV_INPUT_COLOR_ORDER = "BGR"`)
+- stable virtual-environment DonkeyCar package isolation in the personal
+  launcher, while retaining access to `line_following_controller_sungsan.py`
 - BGR-to-HSV conversion for line detection
 - yellow-tape HSV range `(18, 18, 35)` through `(35, 255, 255)`
 - yellow color-dominance filtering to reject gray and cyan candidates
@@ -89,6 +94,6 @@ completed a controlled wheels-up check and a physical track run.
 and verified again after transfer.
 
 Both variants include portable synthetic-image tests. The integrity hashes
-cover only the three files copied verbatim from the Raspberry Pi.
+cover only the three live personal files copied from the Raspberry Pi.
 The verbatim snapshot intentionally retains any legacy trailing whitespace in
 those files so that its hashes continue to match the working Pi copies.

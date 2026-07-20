@@ -11,27 +11,54 @@ Options:
     -h --help          Show this screen.
     --js               Use physical joystick.
     --myconfig=filename     Specify myconfig file to use.
-                            [default: myconfig_sungsan.py]
+                            [default: myconfig_line_following_sungsan.py]
 """
 import logging
+from pathlib import Path
+import sys
 
-from docopt import docopt
-from simple_pid import PID
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_ORIGINAL_SYS_PATH = list(sys.path)
 
-import donkeycar as dk
-from donkeycar.parts.tub_v2 import TubWriter
-from donkeycar.parts.datastore import TubHandler
-from donkeycar.parts.line_follower import LineFollower
-from donkeycar.templates.complete import add_odometry, add_camera, \
-    add_user_controller, add_drivetrain, add_simulator, add_imu, DriveMode, \
-    UserPilotCondition, ToggleRecording
-from donkeycar.parts.logger import LoggerPart
-from donkeycar.parts.transform import Lambda
-from donkeycar.parts.explode import ExplodeDict
-from donkeycar.parts.controller import JoystickController
+# `/home/pi/mycar` may contain a development checkout named `donkeycar`.
+# Temporarily remove the script directory so this personal launcher uses the
+# stable package installed in `/home/pi/env`, then restore it so the personal
+# line-following controller can still be imported from the mycar directory.
+try:
+    sys.path[:] = [
+        entry for entry in sys.path
+        if Path(entry or ".").resolve() != _SCRIPT_DIR
+    ]
+
+    from docopt import docopt
+    from simple_pid import PID
+
+    import donkeycar as dk
+    from donkeycar.parts.tub_v2 import TubWriter
+    from donkeycar.parts.datastore import TubHandler
+    from donkeycar.templates.complete import add_odometry, add_camera, \
+        add_user_controller, add_drivetrain, add_simulator, add_imu, DriveMode, \
+        UserPilotCondition, ToggleRecording
+    from donkeycar.parts.logger import LoggerPart
+    from donkeycar.parts.transform import Lambda
+    from donkeycar.parts.explode import ExplodeDict
+    from donkeycar.parts.controller import JoystickController
+finally:
+    sys.path[:] = _ORIGINAL_SYS_PATH
+
+_DONKEYCAR_SOURCE = Path(dk.__file__).resolve()
+_LOCAL_DONKEYCAR_DIR = _SCRIPT_DIR / "donkeycar"
+if _LOCAL_DONKEYCAR_DIR == _DONKEYCAR_SOURCE.parent:
+    raise RuntimeError(
+        "Sungsan launcher loaded the local DonkeyCar development checkout "
+        "instead of the stable virtual-environment package: {}".format(
+            _DONKEYCAR_SOURCE
+        )
+    )
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+logger.info("Using isolated DonkeyCar package: %s", _DONKEYCAR_SOURCE)
 
 
 def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
@@ -238,6 +265,12 @@ def add_cv_controller(
             module = getattr(module, attr)
 
         my_class = getattr(module, class_name)
+        logger.info(
+            "Using CV controller: %s.%s (%s)",
+            module_name,
+            class_name,
+            getattr(module, "__file__", "unknown source"),
+        )
 
         # add instance of class to vehicle
         V.add(my_class(pid, cfg),
