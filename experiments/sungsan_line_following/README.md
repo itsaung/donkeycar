@@ -9,9 +9,10 @@ DonkeyCar. It does not replace the team's shared `myconfig.py`,
 - `vehicle_tested/` started from the controller and configuration used in the
   successful physical-car test on July 17, 2026. On July 20, its personal
   launcher was updated to isolate stable DonkeyCar 5.3.0, and its controller
-  received the leaf-safe sharp-curve update described below. Both updates
-  passed 40-frame OAK-D tests with a mock drivetrain. The leaf-safe update
-  still requires a final physical pass through the affected curve.
+  received the leaf-safe and adaptive day/night updates described below. The
+  latest version passed synthetic regression tests and live OAK-D processing
+  with a mock drivetrain. It still requires controlled physical passes in
+  daylight and at night before being labelled fully track-validated.
 - `experimental_debug_capture/` starts from the same controller and settings,
   then adds asynchronous diagnostic image capture. Its unit tests pass, but
   this capture-enabled variant has not yet completed a physical driving test.
@@ -31,6 +32,9 @@ The preserved configuration includes:
 - acquisition and tracking distance limits
 - deeper-road candidate preference for curves
 - smoothed line position and safe stopping after five missed frames
+- multi-piece path fitting so isolated leaves and painted patches do not win
+- relative illumination-change detection without changing the night HSV range
+- bounded asynchronous raw/overlay diagnostic capture
 - physically tested PID and throttle settings
 
 ## July 20 leaf-safe sharp-curve update
@@ -47,12 +51,27 @@ The update adds:
 - a lower near-road score weight so proximity to the camera alone cannot make
   a leaf win
 
-Six synthetic-image tests pass, including small-leaf rejection, far-curve
-tape selection, steering-side reversal protection, BGR overlay conversion,
-and safe stopping. A known-good daylight screenshot also continues to select
-the same tape component. This evidence is motor-free; complete a wheels-up
-check and then a controlled pass through the affected curve before treating
-the leaf-safe update as physically track-validated.
+The later adaptive update keeps the calibrated night HSV and dominance values
+unchanged. It merges overlapping scan bands into one road ROI, fits compatible
+tape pieces to a path, rejects low-consistency reacquisition candidates, and
+requires two matching frames after a complete loss. Large movements also need
+path-direction consistency, while close single-piece tracking remains allowed
+for brief low-visibility nighttime gaps.
+
+The illumination guard measures relative brightness change inside the road
+ROI. A dark-to-light or light-to-dark transition stops throttle and steering
+for a short exposure-recovery window instead of steering toward a transient
+false candidate. It is not a daylight-only brightness threshold.
+
+Eleven synthetic-image tests pass, including stable day/night detection,
+leaf and painted-patch rejection, illumination-transition stopping, sharp
+curve motion, safe stopping, and bounded diagnostic capture. Live OAK-D
+frames from the daylight test initially exposed two false-candidate bugs; the
+final candidate tracked the center tape at x=352 and x=342 while ignoring the
+right leaf and left vegetation. The controller averaged about 13 ms at 20 Hz
+with a mock drivetrain. A later repeated camera restart produced an OAK-D
+X_LINK transport error, after which the device returned normally as
+X_LINK_UNBOOTED; this was not a controller exception.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 
@@ -81,12 +100,12 @@ pgrep -af "python.*(drive|follow)"
 Only one driving process should use the camera. Test with the wheels raised
 before placing the car on the track.
 
-## Experimental diagnostic capture
+## Diagnostic capture
 
-The `experimental_debug_capture/` controller saves diagnostic data in a
-background thread so image writing does not block the control loop. The
-configuration records about two samples per second at a 20 Hz loop and also
-records line-lost and line-reacquired transitions.
+The current personal controller saves diagnostic data in a background thread
+so image writing does not block the control loop. At 20 Hz it records one
+periodic sample every 40 frames (about one sample every two seconds), plus
+line-state and illumination transitions. Each run is capped at 500 samples.
 
 Each session creates:
 
@@ -107,8 +126,10 @@ Run its portable unit tests from this directory with:
 python -m pytest -q test_line_following_controller_sungsan.py
 ```
 
-Do not label the automatic-capture variant as vehicle-tested until it has
-completed a controlled wheels-up check and a physical track run.
+The older `experimental_debug_capture/` directory remains as a historical,
+higher-rate capture-only variant. Do not label the latest adaptive controller
+as fully vehicle-tested until it completes controlled daylight and nighttime
+track runs.
 
 ## Integrity
 

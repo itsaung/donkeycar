@@ -1,4 +1,9 @@
+import json
 import logging
+import os
+import queue
+import threading
+import time
 
 import cv2
 import numpy as np
@@ -111,12 +116,64 @@ class LineFollower:
         self.side_reversal_margin = max(0.0, float(getattr(
             cfg, 'SIDE_REVERSAL_MARGIN_PX', 0.0
         )))
+        self.path_min_components = max(1, int(getattr(
+            cfg, 'PATH_MIN_COMPONENTS', 1
+        )))
+        self.path_x_tolerance = max(0.0, float(getattr(
+            cfg, 'PATH_X_TOLERANCE_PX', 8.0
+        )))
+        self.path_max_slope = max(0.0, float(getattr(
+            cfg, 'PATH_MAX_SLOPE', 1.5
+        )))
+        self.path_min_vertical_gap = max(0.0, float(getattr(
+            cfg, 'PATH_MIN_VERTICAL_GAP_PX', 4.0
+        )))
+        self.path_fit_residual = max(0.0, float(getattr(
+            cfg, 'PATH_FIT_RESIDUAL_PX', self.path_x_tolerance
+        )))
+        self.path_support_weight = max(0.0, float(getattr(
+            cfg, 'PATH_SUPPORT_WEIGHT', 1.5
+        )))
+        self.path_alignment_weight = max(0.0, float(getattr(
+            cfg, 'PATH_ALIGNMENT_WEIGHT', 0.75
+        )))
+        self.reacquire_min_path_alignment = float(np.clip(getattr(
+            cfg, 'REACQUIRE_MIN_PATH_ALIGNMENT', 0.0
+        ), 0.0, 1.0))
+        self.jump_min_path_alignment = float(np.clip(getattr(
+            cfg, 'JUMP_MIN_PATH_ALIGNMENT', 0.0
+        ), 0.0, 1.0))
+        self.path_alignment_jump_threshold = max(0.0, float(getattr(
+            cfg, 'PATH_ALIGNMENT_JUMP_THRESHOLD_PX', 8.0
+        )))
+        self.isolated_track_distance = max(0.0, float(getattr(
+            cfg, 'ISOLATED_TRACK_DISTANCE_PX', 12.0
+        )))
         self.reacquire_after = max(
             1, int(getattr(cfg, 'REACQUIRE_LINE_AFTER_FRAMES', 5))
         )
+        self.reacquire_confirm_frames = max(1, int(getattr(
+            cfg, 'REACQUIRE_CONFIRM_FRAMES', 1
+        )))
+        self.reacquire_confirm_distance = max(0.0, float(getattr(
+            cfg, 'REACQUIRE_CONFIRM_DISTANCE_PX', 18.0
+        )))
         self.line_position_alpha = float(np.clip(
             getattr(cfg, 'LINE_POSITION_SMOOTHING', 0.65), 0.0, 1.0
         ))
+
+        self.illumination_guard_enabled = bool(getattr(
+            cfg, 'ILLUMINATION_GUARD_ENABLED', False
+        ))
+        self.illumination_change_threshold = max(0.0, float(getattr(
+            cfg, 'ILLUMINATION_CHANGE_THRESHOLD', 35.0
+        )))
+        self.illumination_stable_threshold = max(0.0, float(getattr(
+            cfg, 'ILLUMINATION_STABLE_THRESHOLD', 8.0
+        )))
+        self.illumination_hold_frames = max(1, int(getattr(
+            cfg, 'ILLUMINATION_HOLD_FRAMES', 4
+        )))
 
         self.steering = 0.0
         self.throttle = cfg.THROTTLE_INITIAL
@@ -135,9 +192,249 @@ class LineFollower:
         self.previous_component_area_ref = None
         self.line_velocity = 0.0
         self.selected_scan_y = None
+        self.selected_path_support = None
+        self.pending_reacquire_x = None
+        self.pending_reacquire_count = 0
+        self.scene_brightness = None
+        self.previous_scene_brightness = None
+        self.illumination_delta = 0.0
+        self.illumination_hold_remaining = 0
 
         self.pid_st = pid
         self._geometry = None
+
+        self.debug_capture_enabled = bool(getattr(
+            cfg, 'CV_DEBUG_CAPTURE', False
+        ))
+        self.capture_every_n_frames = max(
+            1, int(getattr(cfg, 'CV_DEBUG_CAPTURE_EVERY_N_FRAMES', 40))
+        )
+        self.capture_save_overlay = bool(getattr(
+            cfg, 'CV_DEBUG_CAPTURE_SAVE_OVERLAY', True
+        ))
+        self.capture_jpeg_quality = int(np.clip(
+            getattr(cfg, 'CV_DEBUG_CAPTURE_JPEG_QUALITY', 85), 1, 100
+        ))
+        self.capture_queue_size = max(
+            1, int(getattr(cfg, 'CV_DEBUG_CAPTURE_QUEUE_SIZE', 16))
+        )
+        self.capture_max_frames = max(
+            1, int(getattr(cfg, 'CV_DEBUG_CAPTURE_MAX_FRAMES', 500))
+        )
+        self.capture_root = str(getattr(
+            cfg,
+            'CV_DEBUG_CAPTURE_DIR',
+            os.path.join(str(getattr(cfg, 'DATA_PATH', '.')),
+                         'debug_captures'),
+        ))
+        self.capture_session_dir = None
+        self.capture_queue = None
+        self.capture_stop = None
+        self.capture_thread = None
+        self.capture_frame_index = 0
+        self.capture_saved_count = 0
+        self.capture_last_detected = None
+        self.capture_dropped = 0
+        if self.debug_capture_enabled:
+            self._start_debug_capture()
+
+    def _start_debug_capture(self):
+        try:
+            os.makedirs(self.capture_root, exist_ok=True)
+            session_name = 'session_{}'.format(
+                time.strftime('%Y%m%d_%H%M%S')
+            )
+            session_dir = os.path.join(self.capture_root, session_name)
+            suffix = 2
+            while os.path.exists(session_dir):
+                session_dir = os.path.join(
+                    self.capture_root, '{}_{}'.format(session_name, suffix)
+                )
+                suffix += 1
+            os.makedirs(session_dir)
+            self.capture_session_dir = session_dir
+
+            session_info = {
+                'created_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+                'input_color_order': self.input_color_order,
+                'capture_every_n_frames': self.capture_every_n_frames,
+                'capture_max_frames': self.capture_max_frames,
+                'save_overlay': self.capture_save_overlay,
+                'jpeg_quality': self.capture_jpeg_quality,
+                'reference_image_size': [self.ref_image_w, self.ref_image_h],
+                'scan_y': self.scan_y,
+                'scan_height': self.scan_height,
+                'scan_extra_rows': self.scan_extra_rows,
+                'color_ranges': [
+                    [low.tolist(), high.tolist()]
+                    for low, high in self.color_ranges
+                ],
+                'path_min_components': self.path_min_components,
+                'illumination_guard_enabled':
+                    self.illumination_guard_enabled,
+            }
+            with open(
+                    os.path.join(session_dir, 'session.json'),
+                    'w', encoding='utf-8') as session_file:
+                json.dump(session_info, session_file, indent=2)
+
+            self.capture_queue = queue.Queue(
+                maxsize=self.capture_queue_size
+            )
+            self.capture_stop = threading.Event()
+            self.capture_thread = threading.Thread(
+                target=self._debug_capture_worker,
+                name='line-follower-debug-capture',
+                daemon=True,
+            )
+            self.capture_thread.start()
+            logger.info(
+                'CV debug capture enabled: %s (every %d frames, max %d)',
+                session_dir,
+                self.capture_every_n_frames,
+                self.capture_max_frames,
+            )
+        except Exception:
+            logger.exception('Unable to start CV debug capture')
+            self.debug_capture_enabled = False
+
+    def _debug_capture_worker(self):
+        metadata_path = os.path.join(
+            self.capture_session_dir, 'frames.jsonl'
+        )
+        with open(metadata_path, 'a', encoding='utf-8', buffering=1) \
+                as metadata_file:
+            while (not self.capture_stop.is_set() or
+                   not self.capture_queue.empty()):
+                try:
+                    item = self.capture_queue.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                try:
+                    write_args = [
+                        cv2.IMWRITE_JPEG_QUALITY,
+                        self.capture_jpeg_quality,
+                    ]
+                    raw_path = os.path.join(
+                        self.capture_session_dir, item['raw_file']
+                    )
+                    if not cv2.imwrite(
+                            raw_path, item['raw_bgr'], write_args):
+                        raise RuntimeError(
+                            'Unable to write {}'.format(raw_path)
+                        )
+                    if item['overlay_bgr'] is not None:
+                        overlay_path = os.path.join(
+                            self.capture_session_dir,
+                            item['overlay_file'],
+                        )
+                        if not cv2.imwrite(
+                                overlay_path,
+                                item['overlay_bgr'],
+                                write_args):
+                            raise RuntimeError(
+                                'Unable to write {}'.format(overlay_path)
+                            )
+                    metadata_file.write(
+                        json.dumps(item['metadata']) + '\n'
+                    )
+                except Exception:
+                    logger.exception('Unable to save CV debug frame')
+                finally:
+                    self.capture_queue.task_done()
+
+    def _camera_frame_to_bgr(self, cam_img):
+        if self.input_color_order == 'BGR':
+            return np.copy(cam_img)
+        return cv2.cvtColor(cam_img, cv2.COLOR_RGB2BGR)
+
+    def _maybe_capture_debug_frame(
+            self, cam_img, out_img, line_x, confidence):
+        if not self.debug_capture_enabled or self.capture_queue is None:
+            return
+
+        self.capture_frame_index += 1
+        if self.capture_saved_count >= self.capture_max_frames:
+            return
+        detected = confidence >= self.confidence_threshold
+        state_changed = (
+            self.capture_last_detected is None or
+            detected != self.capture_last_detected
+        )
+        periodic = self.capture_frame_index % self.capture_every_n_frames == 0
+        illumination_event = (
+            self.illumination_delta >= self.illumination_change_threshold
+        )
+        self.capture_last_detected = detected
+        if not periodic and not state_changed and not illumination_event:
+            return
+
+        reasons = []
+        if periodic:
+            reasons.append('periodic')
+        if state_changed:
+            reasons.append('line_state_changed')
+        if illumination_event:
+            reasons.append('illumination_changed')
+        timestamp = time.time()
+        stem = 'frame_{:07d}_{:013d}'.format(
+            self.capture_frame_index, int(timestamp * 1000)
+        )
+        raw_file = '{}_raw.jpg'.format(stem)
+        overlay_file = '{}_overlay.jpg'.format(stem) \
+            if self.capture_save_overlay else None
+        if self.capture_save_overlay:
+            if self.overlay_image:
+                overlay_bgr = cv2.cvtColor(out_img, cv2.COLOR_RGB2BGR)
+            else:
+                overlay_bgr = self._camera_frame_to_bgr(out_img)
+        else:
+            overlay_bgr = None
+
+        item = {
+            'raw_file': raw_file,
+            'raw_bgr': self._camera_frame_to_bgr(cam_img),
+            'overlay_file': overlay_file,
+            'overlay_bgr': overlay_bgr,
+            'metadata': {
+                'frame_index': self.capture_frame_index,
+                'timestamp': timestamp,
+                'raw_file': raw_file,
+                'overlay_file': overlay_file,
+                'reason': reasons,
+                'line_detected': detected,
+                'line_x': int(line_x),
+                'target_x': int(self.target_pixel),
+                'confidence': float(confidence),
+                'steering': float(self.steering),
+                'throttle': float(self.throttle),
+                'lost_frames': int(self.no_line_count),
+                'selected_scan_y': self.selected_scan_y,
+                'path_support': self.selected_path_support,
+                'scene_brightness': self.scene_brightness,
+                'illumination_delta': self.illumination_delta,
+                'illumination_hold_remaining':
+                    self.illumination_hold_remaining,
+            },
+        }
+        try:
+            self.capture_queue.put_nowait(item)
+            self.capture_saved_count += 1
+        except queue.Full:
+            self.capture_dropped += 1
+            if self.capture_dropped == 1 or self.capture_dropped % 50 == 0:
+                logger.warning(
+                    'CV debug capture queue full; dropped %d frame(s)',
+                    self.capture_dropped,
+                )
+
+    def shutdown(self):
+        if self.capture_thread is None:
+            return
+        self.capture_stop.set()
+        self.capture_thread.join(timeout=5.0)
+        if self.capture_thread.is_alive():
+            logger.warning('CV debug capture did not finish within 5 seconds')
 
     def _scaled_geometry(self, height, width):
         y0 = int(self.scan_y)
@@ -255,7 +552,11 @@ class LineFollower:
             )
             peak_count = int(component_columns.max()) \
                 if component_columns.size else 0
-            confidence = float(peak_count) / float(max(1, mask.shape[0]))
+            confidence_height = self._geometry[1] \
+                if self._geometry is not None else mask.shape[0]
+            confidence = float(peak_count) / float(
+                max(1, confidence_height)
+            )
             if confidence < self.confidence_threshold:
                 continue
 
@@ -291,12 +592,66 @@ class LineFollower:
                 'tape_quality': tape_quality,
                 'mean_saturation': mean_saturation,
                 'mean_value': mean_value,
+                'center_y': float(scan_y + centroids[label][1]),
                 'bottom_y': int(scan_y + component_y + component_h),
                 'confidence': confidence,
+                'path_support': 1,
+                'path_alignment': 1.0,
                 'label': label,
                 'labels': labels,
             })
         return candidates
+
+    def _annotate_path_support(self, candidates, frame_height, frame_width):
+        """Count geometrically compatible tape pieces for each candidate.
+
+        Real dashed tape normally produces several components that continue
+        along one curve. A leaf or a painted patch elsewhere on the road is
+        usually isolated. All limits are expressed in the reference camera
+        resolution so the same rule works at OAK-D runtime resolution.
+        """
+        scale_x, scale_y = self._runtime_scales(
+            frame_height, frame_width
+        )
+        scale_x = max(scale_x, 1e-6)
+        scale_y = max(scale_y, 1e-6)
+        points = [(
+            candidate['x'] / scale_x,
+            candidate['center_y'] / scale_y,
+        ) for candidate in candidates]
+        for index, candidate in enumerate(candidates):
+            anchor_x, anchor_y = points[index]
+            slopes = [0.0]
+            for other_index, (other_x, other_y) in enumerate(points):
+                if other_index == index:
+                    continue
+                dy_ref = other_y - anchor_y
+                if abs(dy_ref) < self.path_min_vertical_gap:
+                    continue
+                slope = (other_x - anchor_x) / dy_ref
+                if abs(slope) <= self.path_max_slope:
+                    slopes.append(slope)
+
+            best = (1, 0.0, 1.0)
+            for slope in slopes:
+                residuals = []
+                for point_x, point_y in points:
+                    predicted_x = anchor_x + slope * (point_y - anchor_y)
+                    residual = abs(point_x - predicted_x)
+                    if residual <= self.path_fit_residual:
+                        residuals.append(residual)
+                support = len(residuals)
+                mean_residual = float(np.mean(residuals)) \
+                    if residuals else self.path_fit_residual
+                alignment = max(
+                    0.0,
+                    1.0 - abs(slope) / max(self.path_max_slope, 1e-6),
+                )
+                ranked = (support, -mean_residual, alignment)
+                if ranked > best:
+                    best = ranked
+            candidate['path_support'] = best[0]
+            candidate['path_alignment'] = best[2]
 
     def _choose_candidate(self, candidates, frame_height, frame_width):
         if not candidates:
@@ -329,6 +684,21 @@ class LineFollower:
                 continue
             if not tracking and distance > acquire_limit:
                 continue
+
+            if (not tracking and
+                    candidate['path_alignment'] <
+                    self.reacquire_min_path_alignment):
+                continue
+            alignment_jump = self.path_alignment_jump_threshold * scale_x
+            if (tracking and distance > alignment_jump and
+                    candidate['path_alignment'] <
+                    self.jump_min_path_alignment):
+                continue
+
+            if candidate['path_support'] < self.path_min_components:
+                isolated_limit = self.isolated_track_distance * scale_x
+                if not tracking or distance > isolated_limit:
+                    continue
 
             if tracking and self.side_reversal_margin > 0.0:
                 reversal_margin = self.side_reversal_margin * scale_x
@@ -363,12 +733,22 @@ class LineFollower:
             road_depth = float(candidate['bottom_y']) / float(
                 max(1, frame_height)
             )
+            if self.path_min_components <= 1:
+                path_score = 1.0
+            else:
+                path_score = min(
+                    1.0,
+                    float(candidate['path_support'] - 1) /
+                    float(self.path_min_components - 1),
+                )
             score = (
                 1.25 * proximity +
                 1.0 * candidate['confidence'] +
                 0.5 * height_score +
                 1.5 * candidate['tape_quality'] +
-                1.25 * road_depth
+                1.25 * road_depth +
+                self.path_support_weight * path_score +
+                self.path_alignment_weight * candidate['path_alignment']
             )
             ranked = (score, candidate['area'], candidate)
             if best is None or ranked[:2] > best[:2]:
@@ -382,33 +762,67 @@ class LineFollower:
         self._geometry = (y0, band_h)
         self.target_pixel = target
 
-        candidates = []
-        for scan_y in self._scan_positions(height, y0, band_h):
+        scan_positions = self._scan_positions(height, y0, band_h)
+        roi_y0 = min(scan_positions)
+        roi_y1 = min(height, max(y + band_h for y in scan_positions))
+        roi_img = cam_img[roi_y0:roi_y1, :, :]
+        roi_mask = np.zeros((roi_y1 - roi_y0, width), dtype=np.uint8)
+        for scan_y in scan_positions:
             band = cam_img[scan_y:scan_y + band_h, :, :]
             if band.shape[0] != band_h:
                 continue
             band_mask = self._build_mask(band, height, width)
-            candidates.extend(self._component_candidates(
-                band_mask, band, scan_y, height, width
-            ))
+            offset = scan_y - roi_y0
+            roi_mask[offset:offset + band_h] = cv2.bitwise_or(
+                roi_mask[offset:offset + band_h], band_mask
+            )
+
+        candidates = self._component_candidates(
+            roi_mask, roi_img, roi_y0, height, width
+        )
+        self._annotate_path_support(candidates, height, width)
 
         selected_mask = np.zeros((height, width), dtype=np.uint8)
         selected = self._choose_candidate(candidates, height, width)
         if selected is None:
             self.selected_scan_y = None
+            self.selected_path_support = None
+            self.pending_reacquire_x = None
+            self.pending_reacquire_count = 0
             return 0, 0.0, selected_mask
 
         selected_y = int(selected['scan_y'])
         selected_component = np.asarray(
             selected['labels'] == selected['label'], dtype=np.uint8
         ) * 255
-        selected_mask[selected_y:selected_y + band_h] = selected_component
+        selected_mask[selected_y:selected_y + selected_component.shape[0]] = \
+            selected_component
 
         raw_x = float(selected['x'])
         tracking_before_selection = (
             self.previous_line_x is not None and
             self.no_line_count < self.reacquire_after
         )
+        if not tracking_before_selection and self.reacquire_confirm_frames > 1:
+            confirm_limit = self.reacquire_confirm_distance * (
+                float(width) / float(self.ref_image_w)
+                if self.ref_image_w else 1.0
+            )
+            if (self.pending_reacquire_x is not None and
+                    abs(raw_x - self.pending_reacquire_x) <= confirm_limit):
+                self.pending_reacquire_count += 1
+                self.pending_reacquire_x = 0.5 * (
+                    self.pending_reacquire_x + raw_x
+                )
+            else:
+                self.pending_reacquire_x = raw_x
+                self.pending_reacquire_count = 1
+            if self.pending_reacquire_count < self.reacquire_confirm_frames:
+                self.selected_scan_y = selected_y
+                return 0, 0.0, selected_mask
+            raw_x = self.pending_reacquire_x
+        self.pending_reacquire_x = None
+        self.pending_reacquire_count = 0
         if not tracking_before_selection:
             filtered_x = raw_x
             self.line_velocity = 0.0
@@ -426,11 +840,52 @@ class LineFollower:
         self.previous_component_width_ref = selected['width_ref']
         self.previous_component_area_ref = selected['area_ref']
         self.selected_scan_y = selected_y
+        self.selected_path_support = selected['path_support']
         return (
             int(round(filtered_x)),
             float(selected['confidence']),
             selected_mask,
         )
+
+    def _update_illumination_guard(self, cam_img):
+        if not self.illumination_guard_enabled:
+            self.illumination_hold_remaining = 0
+            return False
+
+        height, width = cam_img.shape[:2]
+        y0, band_h, target = self._scaled_geometry(height, width)
+        self._geometry = (y0, band_h)
+        self.target_pixel = target
+        scan_positions = self._scan_positions(height, y0, band_h)
+        roi_y0 = min(scan_positions)
+        roi_y1 = min(height, max(y + band_h for y in scan_positions))
+        road_roi = cam_img[roi_y0:roi_y1]
+        brightness = float(np.median(np.max(road_roi, axis=2)))
+        self.scene_brightness = brightness
+
+        if self.previous_scene_brightness is None:
+            self.previous_scene_brightness = brightness
+            self.illumination_delta = 0.0
+            return False
+
+        delta = abs(brightness - self.previous_scene_brightness)
+        self.previous_scene_brightness = brightness
+        self.illumination_delta = delta
+        changed = delta >= self.illumination_change_threshold
+        if changed:
+            self.illumination_hold_remaining = self.illumination_hold_frames
+            logger.info(
+                "Illumination changed by %.1f; pausing for exposure recovery",
+                delta,
+            )
+        elif self.illumination_hold_remaining > 0:
+            if delta > self.illumination_stable_threshold:
+                self.illumination_hold_remaining = max(
+                    self.illumination_hold_remaining, 2
+                )
+            else:
+                self.illumination_hold_remaining -= 1
+        return self.illumination_hold_remaining > 0
 
     def _pid_coordinate(self, x, width):
         if self.ref_image_w and width:
@@ -447,6 +902,24 @@ class LineFollower:
     def run(self, cam_img):
         if cam_img is None:
             return 0.0, 0.0, None
+
+        if self._update_illumination_guard(cam_img):
+            self.no_line_count += 1
+            self.line_velocity *= self.velocity_decay
+            self.steering = 0.0
+            self.throttle = 0.0
+            self.selected_scan_y = None
+            self.selected_path_support = None
+            height, width = cam_img.shape[:2]
+            line_x = int(round(self.previous_line_x)) \
+                if self.previous_line_x is not None else 0
+            mask = np.zeros((height, width), dtype=np.uint8)
+            out_img = self.overlay_display(cam_img, mask, line_x, 0.0) \
+                if self.overlay_image else cam_img
+            self._maybe_capture_debug_frame(
+                cam_img, out_img, line_x, 0.0
+            )
+            return self.steering, self.throttle, out_img
 
         line_x, confidence, mask = self.get_i_color(cam_img)
         width = cam_img.shape[1]
@@ -489,6 +962,9 @@ class LineFollower:
             out_img = self.overlay_display(
                 cam_img, mask, line_x, confidence
             )
+        self._maybe_capture_debug_frame(
+            cam_img, out_img, line_x, confidence
+        )
         return self.steering, self.throttle, out_img
 
     def overlay_display(self, cam_img, mask, line_x, confidence):
@@ -529,6 +1005,11 @@ class LineFollower:
             "THROTTLE:{:.2f}".format(self.throttle),
             "LINE X:{:d} TARGET:{:d}".format(line_x, self.target_pixel),
             "CONF:{:.3f} LOST:{:d}".format(confidence, self.no_line_count),
+            "LIGHT:{:.0f} DELTA:{:.0f} HOLD:{:d}".format(
+                self.scene_brightness or 0.0,
+                self.illumination_delta,
+                self.illumination_hold_remaining,
+            ),
         ]
         for index, text in enumerate(display):
             cv2.putText(

@@ -984,6 +984,20 @@ PID_D_DELTA = 0.00005
 
 OVERLAY_IMAGE = True
 
+# Save a small, bounded diagnostic sample in the background. This does not
+# depend on DonkeyCar tub recording and avoids the previous empty-data issue.
+# At 20 Hz, every 40 frames is about one sample every two seconds; state and
+# illumination changes are also captured immediately. Each run is capped.
+CV_DEBUG_CAPTURE = True
+CV_DEBUG_CAPTURE_DIR = (
+    "/home/pi/mycar/data_line_following_sungsan/debug_captures"
+)
+CV_DEBUG_CAPTURE_EVERY_N_FRAMES = 40
+CV_DEBUG_CAPTURE_SAVE_OVERLAY = True
+CV_DEBUG_CAPTURE_JPEG_QUALITY = 85
+CV_DEBUG_CAPTURE_QUEUE_SIZE = 16
+CV_DEBUG_CAPTURE_MAX_FRAMES = 500
+
 TOGGLE_RECORDING_BTN = "option"
 INC_PID_D_BTN = None
 DEC_PID_D_BTN = None
@@ -1035,16 +1049,46 @@ TAPE_AREA_REFERENCE_PX = 18
 TAPE_SATURATION_REFERENCE = 90
 TAPE_VALUE_REFERENCE = 220
 MASK_MORPH_KERNEL_PX = 1
-MAX_LINE_JUMP_PX = 40
+MAX_LINE_JUMP_PX = 20
 ACQUIRE_MAX_DISTANCE_PX = 75
 MIN_TRACKED_SIZE_RATIO = 0.45
 LINE_VELOCITY_SMOOTHING = 0.5
 LINE_PREDICTION_FRAMES = 2.0
-MAX_PREDICTED_SHIFT_PX = 18
+MAX_PREDICTED_SHIFT_PX = 10
 LINE_VELOCITY_DECAY = 0.8
 SIDE_REVERSAL_MARGIN_PX = 8
+
+# Day/night-neutral geometry checks. Keep the calibrated HSV range above;
+# prefer multiple yellow tape pieces that continue along one plausible path.
+# A single component is accepted only while it remains very close to an
+# already tracked line, which preserves short nighttime visibility gaps.
+PATH_MIN_COMPONENTS = 2
+PATH_X_TOLERANCE_PX = 8
+PATH_MAX_SLOPE = 1.5
+PATH_MIN_VERTICAL_GAP_PX = 4
+PATH_FIT_RESIDUAL_PX = 6
+PATH_SUPPORT_WEIGHT = 2.0
+PATH_ALIGNMENT_WEIGHT = 0.75
+REACQUIRE_MIN_PATH_ALIGNMENT = 0.20
+JUMP_MIN_PATH_ALIGNMENT = 0.30
+PATH_ALIGNMENT_JUMP_THRESHOLD_PX = 8
+ISOLATED_TRACK_DISTANCE_PX = 8
+
+# After a complete loss (including an exposure transition), require the same
+# path twice before steering toward it. This prevents one-frame leaf/paint
+# detections from becoming the new line.
+REACQUIRE_CONFIRM_FRAMES = 2
+REACQUIRE_CONFIRM_DISTANCE_PX = 18
 REACQUIRE_LINE_AFTER_FRAMES = 5
 LINE_POSITION_SMOOTHING = 0.65
+
+# Use relative road-ROI brightness change rather than a daytime-only cutoff.
+# This guard therefore works for dark-to-light and light-to-dark transitions
+# without changing the yellow thresholds that already work at night.
+ILLUMINATION_GUARD_ENABLED = True
+ILLUMINATION_CHANGE_THRESHOLD = 35
+ILLUMINATION_STABLE_THRESHOLD = 8
+ILLUMINATION_HOLD_FRAMES = 4
 
 # Conservative first-test speed. VESC_MAX_SPEED_PERCENT remains inherited.
 THROTTLE_MIN = 0.25
