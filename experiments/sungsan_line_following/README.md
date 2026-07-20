@@ -35,7 +35,7 @@ The preserved configuration includes:
 - smoothed line position and safe stopping after three missed frames
 - multi-piece path fitting so isolated leaves and painted patches do not win
 - relative illumination-change detection without changing the night HSV range
-- gradual acceleration to 0.22 on straights and early braking toward 0.16 on
+- gradual acceleration to 0.27 on straights and early braking toward 0.21 on
   curves, using both steering demand and the fitted tape-path slope
 - stricter three-frame, saturation, and path-support checks only when
   reacquiring after a complete loss
@@ -97,11 +97,11 @@ The current update therefore:
   while normal ongoing tracking can still follow a real edge curve
 - starts strict reacquisition as soon as the three-frame stop point is reached
   and requires three consistent frames before moving again
-- caps straight throttle at 0.22, starts at 0.18, and targets 0.16 on curves
-- accelerates by only 0.005 per loop but brakes by 0.03 per loop
+- caps straight throttle at 0.27, starts at 0.22, and targets 0.21 on curves
+- accelerates by only 0.005 per loop but brakes by 0.02 per loop
 - uses both steering magnitude and fitted path slope to slow before the
   steering error becomes large
-- removes throttle by 0.10 per missed frame and fully stops after three misses
+- removes throttle by 0.09 per missed frame and fully stops after three misses
 
 Offline replay of the original failed frame now selects the connected yellow
 path at x=413 with three-piece support and a fitted slope near -1.97, instead
@@ -109,9 +109,32 @@ of the low-saturation wall fragments at x=46. Ambiguous two-piece far-edge
 candidates stop safely; a three-piece far-edge yellow path can reacquire.
 
 The exact candidate then completed 60 OAK-D frames at 20 Hz with a MOCK
-drivetrain, averaging about 16 ms in the controller. The test metadata
-confirmed `THROTTLE_STRAIGHT=0.22`, `THROTTLE_CURVE=0.16`, and
-`PATH_MAX_SLOPE=3.5`. The drivetrain was never connected during this test.
+drivetrain, averaging about 16 ms in the controller. The first test metadata
+confirmed the earlier conservative values `THROTTLE_STRAIGHT=0.22`,
+`THROTTLE_CURVE=0.16`, and `PATH_MAX_SLOPE=3.5`. The drivetrain was never
+connected during this test.
+
+## July 20 drivetrain torque follow-up
+
+A physical screenshot after the conservative speed update showed
+`CONF=0.512`, `LOST=0`, `CURVE=1.00`, and `THROTTLE=0.16`. The vision system
+was confidently tracking the yellow tape, but the car did not move. This
+isolated the stop as a drivetrain breakaway-torque issue rather than another
+line-detection failure: 0.16 was too low to start the car while its front
+wheels were turned.
+
+The current balanced values are:
+
+- 0.22 initial throttle
+- 0.27 maximum straight throttle
+- 0.21 curve and low-confidence throttle
+- 0.005 acceleration step and 0.02 braking step
+- 0.09 reduction per missed frame, still stopping after three misses
+
+These remain below the earlier fast 0.35 straight speed, while the 0.21 curve
+command is intended to stay above the observed 0.16 drivetrain dead zone.
+The exact breakaway threshold can vary with battery charge and steering load,
+so the current values still require a controlled physical lap.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 

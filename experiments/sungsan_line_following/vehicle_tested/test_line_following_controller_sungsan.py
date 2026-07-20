@@ -88,22 +88,22 @@ def make_cfg(**overrides):
         CV_DEBUG_CAPTURE_JPEG_QUALITY=85,
         CV_DEBUG_CAPTURE_QUEUE_SIZE=16,
         CV_DEBUG_CAPTURE_MAX_FRAMES=500,
-        THROTTLE_INITIAL=0.18,
+        THROTTLE_INITIAL=0.22,
         THROTTLE_STEP=0.02,
-        THROTTLE_MAX=0.22,
-        THROTTLE_MIN=0.16,
-        THROTTLE_STRAIGHT=0.22,
-        THROTTLE_CURVE=0.16,
+        THROTTLE_MAX=0.27,
+        THROTTLE_MIN=0.21,
+        THROTTLE_STRAIGHT=0.27,
+        THROTTLE_CURVE=0.21,
         THROTTLE_ACCEL_STEP=0.005,
-        THROTTLE_DECEL_STEP=0.03,
+        THROTTLE_DECEL_STEP=0.02,
         CURVE_STEERING_START=0.08,
         CURVE_STEERING_FULL=0.25,
         CURVE_PATH_SLOPE_START=0.8,
         CURVE_PATH_SLOPE_FULL=2.5,
         LOW_CONFIDENCE_THRESHOLD=0.15,
-        LOW_CONFIDENCE_THROTTLE=0.16,
+        LOW_CONFIDENCE_THROTTLE=0.21,
         NO_LINE_STOP_FRAMES=3,
-        NO_LINE_THROTTLE_STEP=0.10,
+        NO_LINE_THROTTLE_STEP=0.09,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -287,7 +287,7 @@ def test_curve_path_brakes_before_large_steering_error():
 
     for _index in range(15):
         _steering, throttle, _ = control.run(straight)
-    assert 0.215 <= throttle <= 0.22
+    assert 0.265 <= throttle <= 0.27
 
     curve = np.full((120, 160, 3), 180, dtype=np.uint8)
     curve[100:110, 79:89] = yellow
@@ -296,7 +296,7 @@ def test_curve_path_brakes_before_large_steering_error():
         _steering, throttle, _ = control.run(curve)
 
     assert control.curve_strength >= 0.75
-    assert throttle <= 0.18
+    assert 0.20 <= throttle <= 0.225
 
 
 def test_stopped_car_needs_three_consistent_frames_to_restart():
