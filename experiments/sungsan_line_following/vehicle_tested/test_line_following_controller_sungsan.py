@@ -72,6 +72,9 @@ def make_cfg(**overrides):
         ISOLATED_TRACK_DISTANCE_PX=8,
         EDGE_REACQUIRE_DISTANCE_PX=45,
         EDGE_REACQUIRE_MIN_COMPONENTS=3,
+        EDGE_REACQUIRE_HISTORY_DISTANCE_PX=25,
+        EDGE_REACQUIRE_HISTORY_MIN_COMPONENTS=2,
+        EDGE_REACQUIRE_HISTORY_MIN_TAPE_QUALITY=0.90,
         REACQUIRE_MIN_SATURATION=35,
         REACQUIRE_LINE_AFTER_FRAMES=3,
         REACQUIRE_CONFIRM_FRAMES=3,
@@ -104,6 +107,7 @@ def make_cfg(**overrides):
         LOW_CONFIDENCE_THROTTLE=0.21,
         NO_LINE_STOP_FRAMES=3,
         NO_LINE_THROTTLE_STEP=0.09,
+        NO_LINE_GRACE_FRAMES=1,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -277,6 +281,61 @@ def test_far_edge_needs_three_connected_tape_pieces_to_reacquire():
     assert control.selected_path_support >= 3
 
 
+def test_far_edge_two_piece_path_can_reacquire_near_tracking_history():
+    cfg = make_cfg(ILLUMINATION_GUARD_ENABLED=False)
+    control = controller(cfg)
+    yellow = bgr_from_hsv(25, 120, 230)
+    three_piece = np.full((120, 160, 3), 180, dtype=np.uint8)
+    three_piece[100:110, 145:155] = yellow
+    three_piece[76:85, 140:150] = yellow
+    three_piece[70:75, 135:145] = yellow
+
+    for _index in range(control.reacquire_confirm_frames):
+        control.run(three_piece)
+    assert control.previous_line_x >= 140
+
+    blank = np.full((120, 160, 3), 180, dtype=np.uint8)
+    for _index in range(control.no_line_stop_frames):
+        control.run(blank)
+    assert control.throttle == 0.0
+
+    two_piece = np.full((120, 160, 3), 180, dtype=np.uint8)
+    two_piece[100:110, 145:155] = yellow
+    two_piece[76:85, 140:150] = yellow
+    for _index in range(control.reacquire_confirm_frames - 1):
+        _steering, throttle, _ = control.run(two_piece)
+        assert throttle == 0.0
+
+    _steering, throttle, _ = control.run(two_piece)
+    assert throttle == control.throttle_min
+    assert control.selected_path_support == 2
+
+
+def test_tracking_history_does_not_accept_two_weak_edge_blobs():
+    cfg = make_cfg(ILLUMINATION_GUARD_ENABLED=False)
+    control = controller(cfg)
+    yellow = bgr_from_hsv(25, 120, 230)
+    three_piece = np.full((120, 160, 3), 180, dtype=np.uint8)
+    three_piece[100:110, 145:155] = yellow
+    three_piece[76:85, 140:150] = yellow
+    three_piece[70:75, 135:145] = yellow
+    for _index in range(control.reacquire_confirm_frames):
+        control.run(three_piece)
+
+    blank = np.full((120, 160, 3), 180, dtype=np.uint8)
+    for _index in range(control.no_line_stop_frames):
+        control.run(blank)
+
+    weak_blobs = np.full((120, 160, 3), 180, dtype=np.uint8)
+    weak_blobs[102:106, 147:151] = yellow
+    weak_blobs[78:82, 142:146] = yellow
+    for _index in range(control.reacquire_confirm_frames + 1):
+        steering, throttle, _ = control.run(weak_blobs)
+
+    assert steering == 0.0
+    assert throttle == 0.0
+
+
 def test_curve_path_brakes_before_large_steering_error():
     cfg = make_cfg(ILLUMINATION_GUARD_ENABLED=False)
     control = controller(cfg)
@@ -297,6 +356,24 @@ def test_curve_path_brakes_before_large_steering_error():
 
     assert control.curve_strength >= 0.75
     assert 0.20 <= throttle <= 0.225
+
+
+def test_one_missed_frame_keeps_drivable_curve_throttle():
+    cfg = make_cfg(ILLUMINATION_GUARD_ENABLED=False)
+    control = controller(cfg)
+    yellow = bgr_from_hsv(25, 120, 230)
+    line = np.full((120, 160, 3), 180, dtype=np.uint8)
+    line[100:110, 76:86] = yellow
+    line[72:81, 76:86] = yellow
+    for _index in range(15):
+        control.run(line)
+    assert control.throttle >= 0.265
+
+    blank = np.full((120, 160, 3), 180, dtype=np.uint8)
+    _steering, throttle, _ = control.run(blank)
+
+    assert control.no_line_count == 1
+    assert throttle == control.throttle_curve
 
 
 def test_stopped_car_needs_three_consistent_frames_to_restart():

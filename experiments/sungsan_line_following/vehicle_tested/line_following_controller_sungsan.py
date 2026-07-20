@@ -152,6 +152,15 @@ class LineFollower:
         self.edge_reacquire_min_components = max(1, int(getattr(
             cfg, 'EDGE_REACQUIRE_MIN_COMPONENTS', 1
         )))
+        self.edge_reacquire_history_distance = max(0.0, float(getattr(
+            cfg, 'EDGE_REACQUIRE_HISTORY_DISTANCE_PX', 0.0
+        )))
+        self.edge_reacquire_history_min_components = max(1, int(getattr(
+            cfg, 'EDGE_REACQUIRE_HISTORY_MIN_COMPONENTS', 2
+        )))
+        self.edge_reacquire_history_min_quality = float(np.clip(getattr(
+            cfg, 'EDGE_REACQUIRE_HISTORY_MIN_TAPE_QUALITY', 1.0
+        ), 0.0, 1.0))
         self.reacquire_min_saturation = max(0.0, float(getattr(
             cfg, 'REACQUIRE_MIN_SATURATION', 0.0
         )))
@@ -228,6 +237,9 @@ class LineFollower:
         self.no_line_throttle_step = float(getattr(
             cfg, 'NO_LINE_THROTTLE_STEP', self.delta_th
         ))
+        self.no_line_grace_frames = max(0, int(getattr(
+            cfg, 'NO_LINE_GRACE_FRAMES', 0
+        )))
         self.no_line_count = 0
         self.previous_line_x = None
         self.previous_component_width_ref = None
@@ -746,10 +758,26 @@ class LineFollower:
             edge_distance_ref = abs(
                 float(candidate['x']) - float(self.target_pixel)
             ) / max(scale_x, 1e-6)
+            history_distance_ref = float('inf')
+            if self.previous_line_x is not None:
+                history_distance_ref = abs(
+                    float(candidate['x']) - float(self.previous_line_x)
+                ) / max(scale_x, 1e-6)
+            history_supported_edge = (
+                self.previous_line_x is not None and
+                self.edge_reacquire_history_distance > 0.0 and
+                history_distance_ref <=
+                self.edge_reacquire_history_distance and
+                candidate['path_support'] >=
+                self.edge_reacquire_history_min_components and
+                candidate['tape_quality'] >=
+                self.edge_reacquire_history_min_quality
+            )
             if (not tracking and self.edge_reacquire_distance > 0.0 and
                     edge_distance_ref > self.edge_reacquire_distance and
                     candidate['path_support'] <
-                    self.edge_reacquire_min_components):
+                    self.edge_reacquire_min_components and
+                    not history_supported_edge):
                 continue
 
             if (not tracking and
@@ -1052,9 +1080,12 @@ class LineFollower:
             self.line_velocity *= self.velocity_decay
             self.curve_strength = 1.0
             self.desired_throttle = 0.0
-            self.throttle = max(
-                0.0, self.throttle - self.no_line_throttle_step
-            )
+            if self.no_line_count <= self.no_line_grace_frames:
+                self.throttle = min(self.throttle, self.throttle_curve)
+            else:
+                self.throttle = max(
+                    0.0, self.throttle - self.no_line_throttle_step
+                )
             if self.no_line_count >= self.no_line_stop_frames:
                 self.throttle = 0.0
                 self.steering = 0.0

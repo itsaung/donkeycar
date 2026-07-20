@@ -68,7 +68,7 @@ ROI. A dark-to-light or light-to-dark transition stops throttle and steering
 for a short exposure-recovery window instead of steering toward a transient
 false candidate. It is not a daylight-only brightness threshold.
 
-Sixteen synthetic-image tests pass, including stable day/night detection,
+Nineteen synthetic-image tests pass, including stable day/night detection,
 leaf and painted-patch rejection, illumination-transition stopping, sharp
 curve motion, edge reacquisition, curve-aware braking, safe stopping, and
 bounded diagnostic capture. Live OAK-D
@@ -135,6 +135,30 @@ These remain below the earlier fast 0.35 straight speed, while the 0.21 curve
 command is intended to stay above the observed 0.16 drivetrain dead zone.
 The exact breakaway threshold can vary with battery charge and steering load,
 so the current values still require a controlled physical lap.
+
+## July 20 two-piece edge recovery follow-up
+
+The next physical run stopped with `CONF=0`, `THROTTLE=0`, and `LOST=179`
+even though two yellow dashes were still visible at the right edge. The saved
+session showed successful tracking at `x=605` shortly before the loss. Once
+the lowest dash left the camera ROI, only two strong tape components remained:
+the replayed stop frame contained candidates near x=580 and x=656 with tape
+quality 1.00/0.99 and saturation 119/78. The old far-edge rule required three
+components after any complete loss, so it rejected both forever.
+
+The revised rule keeps the three-component requirement when starting without
+history. After recent tracking, it may accept two components only when the
+candidate stays within 25 reference pixels of the last tracked line and has
+at least 0.90 tape quality. The normal three-frame confirmation is still
+required before moving. Replaying the physical stop frame now selects the
+real x=580 tape with history, while the same two-piece frame remains rejected
+without history.
+
+The run also exposed frequent isolated one-frame misses that reduced throttle
+from 0.21 to 0.12, below the drivetrain threshold. One missed frame now keeps
+the conservative 0.21 curve throttle; the car still decelerates on the second
+miss and fully stops on the third. This removes single-frame motor dropouts
+without extending the three-frame safety stop.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 

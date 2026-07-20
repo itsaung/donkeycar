@@ -1075,6 +1075,12 @@ PATH_ALIGNMENT_JUMP_THRESHOLD_PX = 8
 ISOLATED_TRACK_DISTANCE_PX = 8
 EDGE_REACQUIRE_DISTANCE_PX = 45
 EDGE_REACQUIRE_MIN_COMPONENTS = 3
+# A fresh far-edge start still needs three pieces. After a complete loss,
+# allow two strong pieces only near the last tracked line; three consecutive
+# frames are still required by REACQUIRE_CONFIRM_FRAMES below.
+EDGE_REACQUIRE_HISTORY_DISTANCE_PX = 25
+EDGE_REACQUIRE_HISTORY_MIN_COMPONENTS = 2
+EDGE_REACQUIRE_HISTORY_MIN_TAPE_QUALITY = 0.90
 REACQUIRE_MIN_SATURATION = 35
 
 # After a complete loss (including an exposure transition), require the same
@@ -1112,6 +1118,9 @@ LOW_CONFIDENCE_THRESHOLD = 0.15
 LOW_CONFIDENCE_THROTTLE = 0.21
 NO_LINE_STOP_FRAMES = 3
 NO_LINE_THROTTLE_STEP = 0.09
+# Preserve enough VESC torque through a single 50 ms vision miss. The second
+# miss decelerates and the third miss still forces a complete stop.
+NO_LINE_GRACE_FRAMES = 1
 
 PID_P = -0.01
 PID_I = 0.0
