@@ -146,6 +146,15 @@ class LineFollower:
         self.path_alignment_jump_threshold = max(0.0, float(getattr(
             cfg, 'PATH_ALIGNMENT_JUMP_THRESHOLD_PX', 8.0
         )))
+        self.edge_reacquire_distance = max(0.0, float(getattr(
+            cfg, 'EDGE_REACQUIRE_DISTANCE_PX', 0.0
+        )))
+        self.edge_reacquire_min_components = max(1, int(getattr(
+            cfg, 'EDGE_REACQUIRE_MIN_COMPONENTS', 1
+        )))
+        self.reacquire_min_saturation = max(0.0, float(getattr(
+            cfg, 'REACQUIRE_MIN_SATURATION', 0.0
+        )))
         self.isolated_track_distance = max(0.0, float(getattr(
             cfg, 'ISOLATED_TRACK_DISTANCE_PX', 12.0
         )))
@@ -176,10 +185,43 @@ class LineFollower:
         )))
 
         self.steering = 0.0
-        self.throttle = cfg.THROTTLE_INITIAL
+        self.throttle_initial = float(cfg.THROTTLE_INITIAL)
+        self.throttle = self.throttle_initial
         self.delta_th = cfg.THROTTLE_STEP
         self.throttle_max = cfg.THROTTLE_MAX
         self.throttle_min = cfg.THROTTLE_MIN
+        self.throttle_straight = float(getattr(
+            cfg, 'THROTTLE_STRAIGHT', self.throttle_max
+        ))
+        self.throttle_curve = float(getattr(
+            cfg, 'THROTTLE_CURVE', self.throttle_min
+        ))
+        self.throttle_accel_step = max(0.0, float(getattr(
+            cfg, 'THROTTLE_ACCEL_STEP', self.delta_th
+        )))
+        self.throttle_decel_step = max(0.0, float(getattr(
+            cfg, 'THROTTLE_DECEL_STEP', self.delta_th
+        )))
+        self.curve_steering_start = max(0.0, float(getattr(
+            cfg, 'CURVE_STEERING_START', 0.1
+        )))
+        self.curve_steering_full = max(
+            self.curve_steering_start + 1e-6,
+            float(getattr(cfg, 'CURVE_STEERING_FULL', 0.3)),
+        )
+        self.curve_path_slope_start = max(0.0, float(getattr(
+            cfg, 'CURVE_PATH_SLOPE_START', 1.0
+        )))
+        self.curve_path_slope_full = max(
+            self.curve_path_slope_start + 1e-6,
+            float(getattr(cfg, 'CURVE_PATH_SLOPE_FULL', 2.5)),
+        )
+        self.low_confidence_threshold = max(0.0, float(getattr(
+            cfg, 'LOW_CONFIDENCE_THRESHOLD', self.confidence_threshold
+        )))
+        self.low_confidence_throttle = float(getattr(
+            cfg, 'LOW_CONFIDENCE_THROTTLE', self.throttle_curve
+        ))
         self.no_line_stop_frames = max(
             1, int(getattr(cfg, 'NO_LINE_STOP_FRAMES', 5))
         )
@@ -193,6 +235,9 @@ class LineFollower:
         self.line_velocity = 0.0
         self.selected_scan_y = None
         self.selected_path_support = None
+        self.selected_path_slope = None
+        self.curve_strength = 0.0
+        self.desired_throttle = self.throttle
         self.pending_reacquire_x = None
         self.pending_reacquire_count = 0
         self.scene_brightness = None
@@ -270,6 +315,9 @@ class LineFollower:
                     for low, high in self.color_ranges
                 ],
                 'path_min_components': self.path_min_components,
+                'path_max_slope': self.path_max_slope,
+                'throttle_straight': self.throttle_straight,
+                'throttle_curve': self.throttle_curve,
                 'illumination_guard_enabled':
                     self.illumination_guard_enabled,
             }
@@ -411,6 +459,9 @@ class LineFollower:
                 'lost_frames': int(self.no_line_count),
                 'selected_scan_y': self.selected_scan_y,
                 'path_support': self.selected_path_support,
+                'path_slope': self.selected_path_slope,
+                'curve_strength': self.curve_strength,
+                'desired_throttle': self.desired_throttle,
                 'scene_brightness': self.scene_brightness,
                 'illumination_delta': self.illumination_delta,
                 'illumination_hold_remaining':
@@ -597,6 +648,7 @@ class LineFollower:
                 'confidence': confidence,
                 'path_support': 1,
                 'path_alignment': 1.0,
+                'path_slope': 0.0,
                 'label': label,
                 'labels': labels,
             })
@@ -633,6 +685,7 @@ class LineFollower:
                     slopes.append(slope)
 
             best = (1, 0.0, 1.0)
+            best_slope = 0.0
             for slope in slopes:
                 residuals = []
                 for point_x, point_y in points:
@@ -650,8 +703,10 @@ class LineFollower:
                 ranked = (support, -mean_residual, alignment)
                 if ranked > best:
                     best = ranked
+                    best_slope = slope
             candidate['path_support'] = best[0]
             candidate['path_alignment'] = best[2]
+            candidate['path_slope'] = best_slope
 
     def _choose_candidate(self, candidates, frame_height, frame_width):
         if not candidates:
@@ -683,6 +738,18 @@ class LineFollower:
             if tracking and distance > jump_limit:
                 continue
             if not tracking and distance > acquire_limit:
+                continue
+            if (not tracking and
+                    candidate['mean_saturation'] <
+                    self.reacquire_min_saturation):
+                continue
+            edge_distance_ref = abs(
+                float(candidate['x']) - float(self.target_pixel)
+            ) / max(scale_x, 1e-6)
+            if (not tracking and self.edge_reacquire_distance > 0.0 and
+                    edge_distance_ref > self.edge_reacquire_distance and
+                    candidate['path_support'] <
+                    self.edge_reacquire_min_components):
                 continue
 
             if (not tracking and
@@ -787,6 +854,7 @@ class LineFollower:
         if selected is None:
             self.selected_scan_y = None
             self.selected_path_support = None
+            self.selected_path_slope = None
             self.pending_reacquire_x = None
             self.pending_reacquire_count = 0
             return 0, 0.0, selected_mask
@@ -841,6 +909,7 @@ class LineFollower:
         self.previous_component_area_ref = selected['area_ref']
         self.selected_scan_y = selected_y
         self.selected_path_support = selected['path_support']
+        self.selected_path_slope = selected['path_slope']
         return (
             int(round(filtered_x)),
             float(selected['confidence']),
@@ -910,6 +979,9 @@ class LineFollower:
             self.throttle = 0.0
             self.selected_scan_y = None
             self.selected_path_support = None
+            self.selected_path_slope = None
+            self.curve_strength = 0.0
+            self.desired_throttle = 0.0
             height, width = cam_img.shape[:2]
             line_x = int(round(self.previous_line_x)) \
                 if self.previous_line_x is not None else 0
@@ -929,22 +1001,57 @@ class LineFollower:
 
         if confidence >= self.confidence_threshold:
             self.no_line_count = 0
-            self.throttle = max(self.throttle, self.throttle_min)
             self.steering = float(np.clip(
                 self.pid_st(line_control), -1.0, 1.0
             ))
 
-            if abs(line_control - target_control) > self.target_threshold:
+            steering_curve = float(np.clip(
+                (abs(self.steering) - self.curve_steering_start) /
+                (self.curve_steering_full - self.curve_steering_start),
+                0.0, 1.0,
+            ))
+            path_slope = abs(self.selected_path_slope or 0.0)
+            path_curve = float(np.clip(
+                (path_slope - self.curve_path_slope_start) /
+                (self.curve_path_slope_full - self.curve_path_slope_start),
+                0.0, 1.0,
+            ))
+            self.curve_strength = max(steering_curve, path_curve)
+            self.desired_throttle = (
+                self.throttle_straight +
+                (self.throttle_curve - self.throttle_straight) *
+                self.curve_strength
+            )
+            if confidence < self.low_confidence_threshold:
+                self.desired_throttle = min(
+                    self.desired_throttle, self.low_confidence_throttle
+                )
+            self.desired_throttle = float(np.clip(
+                self.desired_throttle,
+                min(self.throttle_curve, self.throttle_straight),
+                max(self.throttle_curve, self.throttle_straight),
+            ))
+            if self.throttle > self.desired_throttle:
                 self.throttle = max(
-                    self.throttle_min, self.throttle - self.delta_th
+                    self.desired_throttle,
+                    self.throttle - self.throttle_decel_step,
                 )
             else:
-                self.throttle = min(
-                    self.throttle_max, self.throttle + self.delta_th
-                )
+                if self.throttle < self.throttle_min:
+                    self.throttle = min(
+                        self.desired_throttle,
+                        self.throttle_min,
+                    )
+                else:
+                    self.throttle = min(
+                        self.desired_throttle,
+                        self.throttle + self.throttle_accel_step,
+                    )
         else:
             self.no_line_count += 1
             self.line_velocity *= self.velocity_decay
+            self.curve_strength = 1.0
+            self.desired_throttle = 0.0
             self.throttle = max(
                 0.0, self.throttle - self.no_line_throttle_step
             )
@@ -1005,6 +1112,11 @@ class LineFollower:
             "THROTTLE:{:.2f}".format(self.throttle),
             "LINE X:{:d} TARGET:{:d}".format(line_x, self.target_pixel),
             "CONF:{:.3f} LOST:{:d}".format(confidence, self.no_line_count),
+            "CURVE:{:.2f} DESIRED:{:.2f} SLOPE:{:.2f}".format(
+                self.curve_strength,
+                self.desired_throttle,
+                self.selected_path_slope or 0.0,
+            ),
             "LIGHT:{:.0f} DELTA:{:.0f} HOLD:{:d}".format(
                 self.scene_brightness or 0.0,
                 self.illumination_delta,

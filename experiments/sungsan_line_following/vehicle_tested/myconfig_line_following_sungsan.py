@@ -1064,7 +1064,7 @@ SIDE_REVERSAL_MARGIN_PX = 8
 # already tracked line, which preserves short nighttime visibility gaps.
 PATH_MIN_COMPONENTS = 2
 PATH_X_TOLERANCE_PX = 8
-PATH_MAX_SLOPE = 1.5
+PATH_MAX_SLOPE = 3.5
 PATH_MIN_VERTICAL_GAP_PX = 4
 PATH_FIT_RESIDUAL_PX = 6
 PATH_SUPPORT_WEIGHT = 2.0
@@ -1073,13 +1073,16 @@ REACQUIRE_MIN_PATH_ALIGNMENT = 0.20
 JUMP_MIN_PATH_ALIGNMENT = 0.30
 PATH_ALIGNMENT_JUMP_THRESHOLD_PX = 8
 ISOLATED_TRACK_DISTANCE_PX = 8
+EDGE_REACQUIRE_DISTANCE_PX = 45
+EDGE_REACQUIRE_MIN_COMPONENTS = 3
+REACQUIRE_MIN_SATURATION = 35
 
 # After a complete loss (including an exposure transition), require the same
-# path twice before steering toward it. This prevents one-frame leaf/paint
+# path three times before steering toward it. This prevents brief leaf/paint
 # detections from becoming the new line.
-REACQUIRE_CONFIRM_FRAMES = 2
+REACQUIRE_CONFIRM_FRAMES = 3
 REACQUIRE_CONFIRM_DISTANCE_PX = 18
-REACQUIRE_LINE_AFTER_FRAMES = 5
+REACQUIRE_LINE_AFTER_FRAMES = 3
 LINE_POSITION_SMOOTHING = 0.65
 
 # Use relative road-ROI brightness change rather than a daytime-only cutoff.
@@ -1090,13 +1093,25 @@ ILLUMINATION_CHANGE_THRESHOLD = 35
 ILLUMINATION_STABLE_THRESHOLD = 8
 ILLUMINATION_HOLD_FRAMES = 4
 
-# Conservative first-test speed. VESC_MAX_SPEED_PERCENT remains inherited.
-THROTTLE_MIN = 0.25
-THROTTLE_INITIAL = THROTTLE_MIN
-THROTTLE_MAX = 0.35
+# Curve-aware speed control. Acceleration is deliberately gradual, while
+# braking is faster whenever steering or the fitted tape path predicts a bend.
+# VESC_MAX_SPEED_PERCENT remains inherited from the hardware configuration.
+THROTTLE_MIN = 0.16
+THROTTLE_INITIAL = 0.18
+THROTTLE_MAX = 0.22
 THROTTLE_STEP = 0.02
-NO_LINE_STOP_FRAMES = 5
-NO_LINE_THROTTLE_STEP = 0.05
+THROTTLE_STRAIGHT = 0.22
+THROTTLE_CURVE = 0.16
+THROTTLE_ACCEL_STEP = 0.005
+THROTTLE_DECEL_STEP = 0.03
+CURVE_STEERING_START = 0.08
+CURVE_STEERING_FULL = 0.25
+CURVE_PATH_SLOPE_START = 0.8
+CURVE_PATH_SLOPE_FULL = 2.5
+LOW_CONFIDENCE_THRESHOLD = 0.15
+LOW_CONFIDENCE_THROTTLE = 0.16
+NO_LINE_STOP_FRAMES = 3
+NO_LINE_THROTTLE_STEP = 0.10
 
 PID_P = -0.01
 PID_I = 0.0

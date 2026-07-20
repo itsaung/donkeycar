@@ -9,10 +9,11 @@ DonkeyCar. It does not replace the team's shared `myconfig.py`,
 - `vehicle_tested/` started from the controller and configuration used in the
   successful physical-car test on July 17, 2026. On July 20, its personal
   launcher was updated to isolate stable DonkeyCar 5.3.0, and its controller
-  received the leaf-safe and adaptive day/night updates described below. The
-  latest version passed synthetic regression tests and live OAK-D processing
-  with a mock drivetrain. It still requires controlled physical passes in
-  daylight and at night before being labelled fully track-validated.
+  received the leaf-safe, adaptive day/night, sharp-curve, and curve-speed
+  updates described below. The latest version passed recorded-frame replay,
+  synthetic regression tests, and live OAK-D processing with a mock
+  drivetrain. It still requires a controlled physical pass after the latest
+  speed change before being labelled fully track-validated.
 - `experimental_debug_capture/` starts from the same controller and settings,
   then adds asynchronous diagnostic image capture. Its unit tests pass, but
   this capture-enabled variant has not yet completed a physical driving test.
@@ -31,11 +32,15 @@ The preserved configuration includes:
 - connected-component filtering for speckles and broad wall regions
 - acquisition and tracking distance limits
 - deeper-road candidate preference for curves
-- smoothed line position and safe stopping after five missed frames
+- smoothed line position and safe stopping after three missed frames
 - multi-piece path fitting so isolated leaves and painted patches do not win
 - relative illumination-change detection without changing the night HSV range
+- gradual acceleration to 0.22 on straights and early braking toward 0.16 on
+  curves, using both steering demand and the fitted tape-path slope
+- stricter three-frame, saturation, and path-support checks only when
+  reacquiring after a complete loss
 - bounded asynchronous raw/overlay diagnostic capture
-- physically tested PID and throttle settings
+- the physically tested PID settings, with a new conservative throttle policy
 
 ## July 20 leaf-safe sharp-curve update
 
@@ -63,15 +68,50 @@ ROI. A dark-to-light or light-to-dark transition stops throttle and steering
 for a short exposure-recovery window instead of steering toward a transient
 false candidate. It is not a daylight-only brightness threshold.
 
-Eleven synthetic-image tests pass, including stable day/night detection,
+Sixteen synthetic-image tests pass, including stable day/night detection,
 leaf and painted-patch rejection, illumination-transition stopping, sharp
-curve motion, safe stopping, and bounded diagnostic capture. Live OAK-D
+curve motion, edge reacquisition, curve-aware braking, safe stopping, and
+bounded diagnostic capture. Live OAK-D
 frames from the daylight test initially exposed two false-candidate bugs; the
 final candidate tracked the center tape at x=352 and x=342 while ignoring the
 right leaf and left vegetation. The controller averaged about 13 ms at 20 Hz
 with a mock drivetrain. A later repeated camera restart produced an OAK-D
 X_LINK transport error, after which the device returned normally as
 X_LINK_UNBOOTED; this was not a controller exception.
+
+## July 20 recorded-run curve and speed update
+
+The saved driving session showed that the difficult corner was not primarily
+an exposure failure: road brightness stayed roughly stable while throttle had
+already risen to 0.35. At frame 179, three visible yellow tape pieces formed a
+steep path, but the old path-slope limit of 1.5 split them apart. The car
+briefly reacquired the tape at frame 185, too late to make the turn, and by
+frame 200 the yellow line was almost outside the camera view.
+
+The current update therefore:
+
+- raises the geometric path-slope limit from 1.5 to 3.5 without changing the
+  calibrated day/night HSV thresholds
+- rejects low-saturation wall or white-paint fragments during reacquisition
+- requires three connected pieces before reacquiring a far-edge candidate,
+  while normal ongoing tracking can still follow a real edge curve
+- starts strict reacquisition as soon as the three-frame stop point is reached
+  and requires three consistent frames before moving again
+- caps straight throttle at 0.22, starts at 0.18, and targets 0.16 on curves
+- accelerates by only 0.005 per loop but brakes by 0.03 per loop
+- uses both steering magnitude and fitted path slope to slow before the
+  steering error becomes large
+- removes throttle by 0.10 per missed frame and fully stops after three misses
+
+Offline replay of the original failed frame now selects the connected yellow
+path at x=413 with three-piece support and a fitted slope near -1.97, instead
+of the low-saturation wall fragments at x=46. Ambiguous two-piece far-edge
+candidates stop safely; a three-piece far-edge yellow path can reacquire.
+
+The exact candidate then completed 60 OAK-D frames at 20 Hz with a MOCK
+drivetrain, averaging about 16 ms in the controller. The test metadata
+confirmed `THROTTLE_STRAIGHT=0.22`, `THROTTLE_CURVE=0.16`, and
+`PATH_MAX_SLOPE=3.5`. The drivetrain was never connected during this test.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 
@@ -111,7 +151,8 @@ Each session creates:
 
 - `*_raw.jpg`: original BGR camera frame
 - `*_overlay.jpg`: web/debug overlay
-- `frames.jsonl`: line position, confidence, steering, throttle, and state
+- `frames.jsonl`: line position, confidence, steering, throttle, fitted path
+  slope, curve strength, desired throttle, and state
 - `session.json`: capture and vision settings
 
 The configured output root is:
@@ -127,9 +168,9 @@ python -m pytest -q test_line_following_controller_sungsan.py
 ```
 
 The older `experimental_debug_capture/` directory remains as a historical,
-higher-rate capture-only variant. Do not label the latest adaptive controller
-as fully vehicle-tested until it completes controlled daylight and nighttime
-track runs.
+higher-rate capture-only variant. Do not label the latest curve-speed version
+as fully vehicle-tested until it completes a controlled physical track run;
+daylight and nighttime rechecks are still recommended.
 
 ## Integrity
 

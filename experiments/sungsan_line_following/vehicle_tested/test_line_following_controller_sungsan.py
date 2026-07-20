@@ -61,7 +61,7 @@ def make_cfg(**overrides):
         SIDE_REVERSAL_MARGIN_PX=8,
         PATH_MIN_COMPONENTS=2,
         PATH_X_TOLERANCE_PX=8,
-        PATH_MAX_SLOPE=1.5,
+        PATH_MAX_SLOPE=3.5,
         PATH_MIN_VERTICAL_GAP_PX=4,
         PATH_FIT_RESIDUAL_PX=6,
         PATH_SUPPORT_WEIGHT=2.0,
@@ -70,8 +70,11 @@ def make_cfg(**overrides):
         JUMP_MIN_PATH_ALIGNMENT=0.30,
         PATH_ALIGNMENT_JUMP_THRESHOLD_PX=8,
         ISOLATED_TRACK_DISTANCE_PX=8,
-        REACQUIRE_LINE_AFTER_FRAMES=5,
-        REACQUIRE_CONFIRM_FRAMES=2,
+        EDGE_REACQUIRE_DISTANCE_PX=45,
+        EDGE_REACQUIRE_MIN_COMPONENTS=3,
+        REACQUIRE_MIN_SATURATION=35,
+        REACQUIRE_LINE_AFTER_FRAMES=3,
+        REACQUIRE_CONFIRM_FRAMES=3,
         REACQUIRE_CONFIRM_DISTANCE_PX=18,
         LINE_POSITION_SMOOTHING=0.65,
         ILLUMINATION_GUARD_ENABLED=True,
@@ -85,12 +88,22 @@ def make_cfg(**overrides):
         CV_DEBUG_CAPTURE_JPEG_QUALITY=85,
         CV_DEBUG_CAPTURE_QUEUE_SIZE=16,
         CV_DEBUG_CAPTURE_MAX_FRAMES=500,
-        THROTTLE_INITIAL=0.25,
+        THROTTLE_INITIAL=0.18,
         THROTTLE_STEP=0.02,
-        THROTTLE_MAX=0.35,
-        THROTTLE_MIN=0.25,
-        NO_LINE_STOP_FRAMES=5,
-        NO_LINE_THROTTLE_STEP=0.05,
+        THROTTLE_MAX=0.22,
+        THROTTLE_MIN=0.16,
+        THROTTLE_STRAIGHT=0.22,
+        THROTTLE_CURVE=0.16,
+        THROTTLE_ACCEL_STEP=0.005,
+        THROTTLE_DECEL_STEP=0.03,
+        CURVE_STEERING_START=0.08,
+        CURVE_STEERING_FULL=0.25,
+        CURVE_PATH_SLOPE_START=0.8,
+        CURVE_PATH_SLOPE_FULL=2.5,
+        LOW_CONFIDENCE_THRESHOLD=0.15,
+        LOW_CONFIDENCE_THROTTLE=0.16,
+        NO_LINE_STOP_FRAMES=3,
+        NO_LINE_THROTTLE_STEP=0.10,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -199,16 +212,114 @@ def test_overlay_converts_oak_bgr_to_web_rgb():
     assert tuple(overlay[119, 159]) == (30, 20, 10)
 
 
-def test_stops_after_five_missed_frames():
+def test_stops_after_three_missed_frames():
     control = controller()
     blank = np.full((120, 160, 3), 90, dtype=np.uint8)
     control.steering = 0.4
 
-    for _index in range(5):
+    for _index in range(3):
         steering, throttle, _overlay = control.run(blank)
 
     assert steering == 0.0
     assert throttle == 0.0
+
+
+def test_links_steep_curve_tape_instead_of_gray_vertical_distractor():
+    image = np.full((120, 160, 3), 180, dtype=np.uint8)
+    yellow = bgr_from_hsv(25, 90, 230)
+    gray_beige = bgr_from_hsv(25, 32, 200)
+    # Three pieces from a sharp bend (about 2 reference pixels sideways for
+    # every reference pixel upward), matching the failed physical frame.
+    image[100:110, 56:66] = yellow
+    image[83:92, 90:101] = yellow
+    image[70:78, 116:127] = yellow
+    # Low-saturation wall/paint fragments that used to win after a loss.
+    image[100:109, 43:52] = gray_beige
+    image[76:84, 43:52] = gray_beige
+
+    control = controller()
+    line_x, confidence, _ = confirmed_detection(control, image)
+
+    assert 55 <= line_x <= 70
+    assert confidence >= 0.20
+    assert control.selected_path_support >= 3
+    assert abs(control.selected_path_slope) > 1.5
+
+
+def test_reacquire_rejects_low_saturation_wall_fragments():
+    image = np.full((120, 160, 3), 180, dtype=np.uint8)
+    gray_beige = bgr_from_hsv(25, 32, 200)
+    image[100:110, 76:86] = gray_beige
+    image[82:91, 76:86] = gray_beige
+    image[70:78, 76:86] = gray_beige
+
+    line_x, confidence, _ = confirmed_detection(controller(), image)
+
+    assert line_x == 0
+    assert confidence == 0.0
+
+
+def test_far_edge_needs_three_connected_tape_pieces_to_reacquire():
+    yellow = bgr_from_hsv(25, 120, 230)
+    two_piece = np.full((120, 160, 3), 180, dtype=np.uint8)
+    two_piece[100:110, 145:155] = yellow
+    two_piece[76:85, 140:150] = yellow
+    line_x, confidence, _ = confirmed_detection(controller(), two_piece)
+    assert line_x == 0
+    assert confidence == 0.0
+
+    three_piece = two_piece.copy()
+    three_piece[70:75, 135:145] = yellow
+    control = controller()
+    line_x, confidence, _ = confirmed_detection(control, three_piece)
+    assert 140 <= line_x <= 155
+    assert confidence >= 0.20
+    assert control.selected_path_support >= 3
+
+
+def test_curve_path_brakes_before_large_steering_error():
+    cfg = make_cfg(ILLUMINATION_GUARD_ENABLED=False)
+    control = controller(cfg)
+    yellow = bgr_from_hsv(25, 120, 230)
+    straight = np.full((120, 160, 3), 180, dtype=np.uint8)
+    straight[100:110, 76:86] = yellow
+    straight[72:81, 76:86] = yellow
+
+    for _index in range(15):
+        _steering, throttle, _ = control.run(straight)
+    assert 0.215 <= throttle <= 0.22
+
+    curve = np.full((120, 160, 3), 180, dtype=np.uint8)
+    curve[100:110, 79:89] = yellow
+    curve[72:81, 142:152] = yellow
+    for _index in range(3):
+        _steering, throttle, _ = control.run(curve)
+
+    assert control.curve_strength >= 0.75
+    assert throttle <= 0.18
+
+
+def test_stopped_car_needs_three_consistent_frames_to_restart():
+    cfg = make_cfg(ILLUMINATION_GUARD_ENABLED=False)
+    control = controller(cfg)
+    yellow = bgr_from_hsv(25, 120, 230)
+    line = np.full((120, 160, 3), 180, dtype=np.uint8)
+    line[100:110, 76:86] = yellow
+    line[72:81, 76:86] = yellow
+    blank = np.full((120, 160, 3), 180, dtype=np.uint8)
+
+    for _index in range(control.reacquire_confirm_frames):
+        control.run(line)
+    for _index in range(control.no_line_stop_frames):
+        control.run(blank)
+
+    for _index in range(control.reacquire_confirm_frames - 1):
+        steering, throttle, _ = control.run(line)
+        assert steering == 0.0
+        assert throttle == 0.0
+
+    _steering, throttle, _ = control.run(line)
+    assert throttle == control.throttle_min
 
 
 def test_detects_the_same_tape_path_in_day_and_night():
@@ -251,8 +362,8 @@ def test_illumination_transition_stops_without_corrupting_tracker():
     night[98:110, 72:88] = yellow_night
     night[72:81, 66:77] = yellow_night
 
-    control.run(night)
-    control.run(night)
+    for _index in range(control.reacquire_confirm_frames):
+        control.run(night)
     tracked_x = control.previous_line_x
     assert tracked_x is not None
 
@@ -277,8 +388,8 @@ def test_steady_night_does_not_trigger_illumination_guard():
     night[98:110, 72:88] = yellow
     night[72:81, 66:77] = yellow
 
-    control.run(night)
-    control.run(night)
+    for _index in range(control.reacquire_confirm_frames):
+        control.run(night)
 
     assert control.illumination_hold_remaining == 0
     assert control.previous_line_x is not None
