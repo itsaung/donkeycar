@@ -1048,6 +1048,15 @@ TAPE_WIDTH_REFERENCE_PX = 9
 TAPE_AREA_REFERENCE_PX = 18
 TAPE_SATURATION_REFERENCE = 90
 TAPE_VALUE_REFERENCE = 220
+# Selection-time tape checks. Far components remain available to support path
+# fitting, but steering follows only a saturated, compact component that
+# reaches the lower road region. This rejects beige texture and leaf clusters.
+TRACK_MIN_SATURATION = 50
+MIN_COMPONENT_FILL_RATIO = 0.45
+MIN_SELECTED_BOTTOM_Y_PX = 86
+CENTER_SINGLE_REACQUIRE_DISTANCE_PX = 12
+CENTER_SINGLE_MIN_TAPE_QUALITY = 0.90
+CENTER_SINGLE_MIN_AREA_PX = 25
 MASK_MORPH_KERNEL_PX = 1
 MAX_LINE_JUMP_PX = 20
 ACQUIRE_MAX_DISTANCE_PX = 75
@@ -1081,7 +1090,7 @@ EDGE_REACQUIRE_MIN_COMPONENTS = 3
 EDGE_REACQUIRE_HISTORY_DISTANCE_PX = 25
 EDGE_REACQUIRE_HISTORY_MIN_COMPONENTS = 2
 EDGE_REACQUIRE_HISTORY_MIN_TAPE_QUALITY = 0.90
-REACQUIRE_MIN_SATURATION = 35
+REACQUIRE_MIN_SATURATION = 50
 
 # After a complete loss (including an exposure transition), require the same
 # path three times before steering toward it. This prevents brief leaf/paint
@@ -1121,6 +1130,9 @@ NO_LINE_THROTTLE_STEP = 0.09
 # Preserve enough VESC torque through a single 50 ms vision miss. The second
 # miss decelerates and the third miss still forces a complete stop.
 NO_LINE_GRACE_FRAMES = 1
+# Rapidly remove a stale turn after detection disappears. This changes a
+# previous -0.47 command to about -0.16 and then -0.06 before the full stop.
+NO_LINE_STEERING_DECAY = 0.35
 
 PID_P = -0.01
 PID_I = 0.0

@@ -164,6 +164,24 @@ class LineFollower:
         self.reacquire_min_saturation = max(0.0, float(getattr(
             cfg, 'REACQUIRE_MIN_SATURATION', 0.0
         )))
+        self.track_min_saturation = max(0.0, float(getattr(
+            cfg, 'TRACK_MIN_SATURATION', 0.0
+        )))
+        self.min_component_fill_ratio = float(np.clip(getattr(
+            cfg, 'MIN_COMPONENT_FILL_RATIO', 0.0
+        ), 0.0, 1.0))
+        self.min_selected_bottom_y = max(0.0, float(getattr(
+            cfg, 'MIN_SELECTED_BOTTOM_Y_PX', 0.0
+        )))
+        self.center_single_reacquire_distance = max(0.0, float(getattr(
+            cfg, 'CENTER_SINGLE_REACQUIRE_DISTANCE_PX', 0.0
+        )))
+        self.center_single_min_quality = float(np.clip(getattr(
+            cfg, 'CENTER_SINGLE_MIN_TAPE_QUALITY', 1.0
+        ), 0.0, 1.0))
+        self.center_single_min_area = max(0.0, float(getattr(
+            cfg, 'CENTER_SINGLE_MIN_AREA_PX', float('inf')
+        )))
         self.isolated_track_distance = max(0.0, float(getattr(
             cfg, 'ISOLATED_TRACK_DISTANCE_PX', 12.0
         )))
@@ -240,6 +258,9 @@ class LineFollower:
         self.no_line_grace_frames = max(0, int(getattr(
             cfg, 'NO_LINE_GRACE_FRAMES', 0
         )))
+        self.no_line_steering_decay = float(np.clip(getattr(
+            cfg, 'NO_LINE_STEERING_DECAY', 1.0
+        ), 0.0, 1.0))
         self.no_line_count = 0
         self.previous_line_x = None
         self.previous_component_width_ref = None
@@ -248,6 +269,9 @@ class LineFollower:
         self.selected_scan_y = None
         self.selected_path_support = None
         self.selected_path_slope = None
+        self.selected_saturation = None
+        self.selected_fill_ratio = None
+        self.selected_tape_quality = None
         self.curve_strength = 0.0
         self.desired_throttle = self.throttle
         self.pending_reacquire_x = None
@@ -328,6 +352,10 @@ class LineFollower:
                 ],
                 'path_min_components': self.path_min_components,
                 'path_max_slope': self.path_max_slope,
+                'track_min_saturation': self.track_min_saturation,
+                'min_component_fill_ratio':
+                    self.min_component_fill_ratio,
+                'min_selected_bottom_y': self.min_selected_bottom_y,
                 'throttle_straight': self.throttle_straight,
                 'throttle_curve': self.throttle_curve,
                 'illumination_guard_enabled':
@@ -472,6 +500,9 @@ class LineFollower:
                 'selected_scan_y': self.selected_scan_y,
                 'path_support': self.selected_path_support,
                 'path_slope': self.selected_path_slope,
+                'selected_saturation': self.selected_saturation,
+                'selected_fill_ratio': self.selected_fill_ratio,
+                'selected_tape_quality': self.selected_tape_quality,
                 'curve_strength': self.curve_strength,
                 'desired_throttle': self.desired_throttle,
                 'scene_brightness': self.scene_brightness,
@@ -628,6 +659,9 @@ class LineFollower:
             mean_value = float(np.mean(hsv[:, :, 2][component_pixels]))
             width_ref = float(component_w) / float(max(scale_x, 1e-6))
             area_ref = float(area) / float(max(scale_x * scale_y, 1e-6))
+            fill_ratio = float(area) / float(max(
+                1, component_w * component_h
+            ))
             width_score = min(1.0, width_ref / self.tape_width_reference)
             area_score = min(1.0, area_ref / self.tape_area_reference)
             saturation_score = min(
@@ -652,6 +686,7 @@ class LineFollower:
                 'height': int(component_h),
                 'width_ref': width_ref,
                 'area_ref': area_ref,
+                'fill_ratio': fill_ratio,
                 'tape_quality': tape_quality,
                 'mean_saturation': mean_saturation,
                 'mean_value': mean_value,
@@ -724,7 +759,7 @@ class LineFollower:
         if not candidates:
             return None
 
-        scale_x, _scale_y = self._runtime_scales(
+        scale_x, scale_y = self._runtime_scales(
             frame_height, frame_width
         )
         jump_limit = max(1.0, self.max_line_jump * scale_x)
@@ -746,6 +781,19 @@ class LineFollower:
 
         best = None
         for candidate in candidates:
+            target_distance_ref = abs(
+                float(candidate['x']) - float(self.target_pixel)
+            ) / max(scale_x, 1e-6)
+            bottom_y_ref = float(candidate['bottom_y']) / max(
+                scale_y, 1e-6
+            )
+            if candidate['mean_saturation'] < self.track_min_saturation:
+                continue
+            if candidate['fill_ratio'] < self.min_component_fill_ratio:
+                continue
+            if bottom_y_ref < self.min_selected_bottom_y:
+                continue
+
             distance = abs(float(candidate['x']) - float(expected_x))
             if tracking and distance > jump_limit:
                 continue
@@ -755,9 +803,7 @@ class LineFollower:
                     candidate['mean_saturation'] <
                     self.reacquire_min_saturation):
                 continue
-            edge_distance_ref = abs(
-                float(candidate['x']) - float(self.target_pixel)
-            ) / max(scale_x, 1e-6)
+            edge_distance_ref = target_distance_ref
             history_distance_ref = float('inf')
             if self.previous_line_x is not None:
                 history_distance_ref = abs(
@@ -790,7 +836,18 @@ class LineFollower:
                     self.jump_min_path_alignment):
                 continue
 
-            if candidate['path_support'] < self.path_min_components:
+            centered_single_reacquire = (
+                not tracking and
+                candidate['path_support'] == 1 and
+                self.center_single_reacquire_distance > 0.0 and
+                target_distance_ref <=
+                self.center_single_reacquire_distance and
+                candidate['tape_quality'] >=
+                self.center_single_min_quality and
+                candidate['area_ref'] >= self.center_single_min_area
+            )
+            if (candidate['path_support'] < self.path_min_components and
+                    not centered_single_reacquire):
                 isolated_limit = self.isolated_track_distance * scale_x
                 if not tracking or distance > isolated_limit:
                     continue
@@ -883,6 +940,9 @@ class LineFollower:
             self.selected_scan_y = None
             self.selected_path_support = None
             self.selected_path_slope = None
+            self.selected_saturation = None
+            self.selected_fill_ratio = None
+            self.selected_tape_quality = None
             self.pending_reacquire_x = None
             self.pending_reacquire_count = 0
             return 0, 0.0, selected_mask
@@ -938,6 +998,9 @@ class LineFollower:
         self.selected_scan_y = selected_y
         self.selected_path_support = selected['path_support']
         self.selected_path_slope = selected['path_slope']
+        self.selected_saturation = selected['mean_saturation']
+        self.selected_fill_ratio = selected['fill_ratio']
+        self.selected_tape_quality = selected['tape_quality']
         return (
             int(round(filtered_x)),
             float(selected['confidence']),
@@ -1008,6 +1071,9 @@ class LineFollower:
             self.selected_scan_y = None
             self.selected_path_support = None
             self.selected_path_slope = None
+            self.selected_saturation = None
+            self.selected_fill_ratio = None
+            self.selected_tape_quality = None
             self.curve_strength = 0.0
             self.desired_throttle = 0.0
             height, width = cam_img.shape[:2]
@@ -1078,6 +1144,7 @@ class LineFollower:
         else:
             self.no_line_count += 1
             self.line_velocity *= self.velocity_decay
+            self.steering *= self.no_line_steering_decay
             self.curve_strength = 1.0
             self.desired_throttle = 0.0
             if self.no_line_count <= self.no_line_grace_frames:
@@ -1147,6 +1214,11 @@ class LineFollower:
                 self.curve_strength,
                 self.desired_throttle,
                 self.selected_path_slope or 0.0,
+            ),
+            "SAT:{:.0f} FILL:{:.2f} QUALITY:{:.2f}".format(
+                self.selected_saturation or 0.0,
+                self.selected_fill_ratio or 0.0,
+                self.selected_tape_quality or 0.0,
             ),
             "LIGHT:{:.0f} DELTA:{:.0f} HOLD:{:d}".format(
                 self.scene_brightness or 0.0,

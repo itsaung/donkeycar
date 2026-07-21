@@ -68,7 +68,7 @@ ROI. A dark-to-light or light-to-dark transition stops throttle and steering
 for a short exposure-recovery window instead of steering toward a transient
 false candidate. It is not a daylight-only brightness threshold.
 
-Nineteen synthetic-image tests pass, including stable day/night detection,
+Twenty-two synthetic-image tests pass, including stable day/night detection,
 leaf and painted-patch rejection, illumination-transition stopping, sharp
 curve motion, edge reacquisition, curve-aware braking, safe stopping, and
 bounded diagnostic capture. Live OAK-D
@@ -159,6 +159,41 @@ from 0.21 to 0.12, below the drivetrain threshold. One missed frame now keeps
 the conservative 0.21 curve throttle; the car still decelerates on the second
 miss and fully stops on the third. This removes single-frame motor dropouts
 without extending the three-frame safety stop.
+
+## July 20 tape-shape and stale-steering update
+
+Recorded frames from the blue-rectangle section showed that the blue paint was
+not classified as yellow. The actual false candidates were low-saturation
+beige pavement textures, scattered yellow leaves, and vegetation beside the
+track. Those fragments sometimes formed a geometrically plausible path. After
+one was selected, the controller also retained the previous left steering
+command during missed frames, which made the car continue leaving the track.
+
+The selection stage now requires the anchor component to have at least 50 mean
+saturation, a 0.45 component fill ratio, and a sufficiently low position in
+the road ROI. These checks reject sparse leaf clusters and pavement texture
+without narrowing the calibrated day/night HSV range. Farther tape pieces can
+still support path fitting; the stricter shape checks apply to the selected
+anchor that controls steering.
+
+The evening stop frame contained one clean, centered yellow dash with mean
+saturation 78.5 and fill ratio 0.89. A narrow exception now allows one such
+high-quality centered dash to begin the normal three-frame confirmation. It
+does not allow an arbitrary single yellow object: it must be within 12
+reference pixels of the target, have at least 0.90 tape quality and 25
+reference-pixel area, and pass the saturation, fill, and lower-ROI checks.
+
+When no valid line is found, steering now decays by 65 percent per frame while
+the existing throttle policy remains unchanged: one missed frame retains the
+curve throttle, the second slows, and the third stops. For example, a stale
+-0.47 left command becomes approximately -0.16, then -0.06, then zero instead
+of continuing the turn.
+
+Offline replay selects the centered evening dash at x=346, rejects the two
+documented leaf clusters, chooses the actual yellow edge tape at x=644 instead
+of left-side vegetation, and safely rejects the ambiguous blue-rectangle
+approach frame. The previously fixed sharp curve at x=413 and history-aware
+two-piece edge recovery at x=580 still pass.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 

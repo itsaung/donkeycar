@@ -50,6 +50,12 @@ def make_cfg(**overrides):
         TAPE_AREA_REFERENCE_PX=18,
         TAPE_SATURATION_REFERENCE=90,
         TAPE_VALUE_REFERENCE=220,
+        TRACK_MIN_SATURATION=50,
+        MIN_COMPONENT_FILL_RATIO=0.45,
+        MIN_SELECTED_BOTTOM_Y_PX=86,
+        CENTER_SINGLE_REACQUIRE_DISTANCE_PX=12,
+        CENTER_SINGLE_MIN_TAPE_QUALITY=0.90,
+        CENTER_SINGLE_MIN_AREA_PX=25,
         MASK_MORPH_KERNEL_PX=1,
         MAX_LINE_JUMP_PX=20,
         ACQUIRE_MAX_DISTANCE_PX=75,
@@ -75,7 +81,7 @@ def make_cfg(**overrides):
         EDGE_REACQUIRE_HISTORY_DISTANCE_PX=25,
         EDGE_REACQUIRE_HISTORY_MIN_COMPONENTS=2,
         EDGE_REACQUIRE_HISTORY_MIN_TAPE_QUALITY=0.90,
-        REACQUIRE_MIN_SATURATION=35,
+        REACQUIRE_MIN_SATURATION=50,
         REACQUIRE_LINE_AFTER_FRAMES=3,
         REACQUIRE_CONFIRM_FRAMES=3,
         REACQUIRE_CONFIRM_DISTANCE_PX=18,
@@ -108,6 +114,7 @@ def make_cfg(**overrides):
         NO_LINE_STOP_FRAMES=3,
         NO_LINE_THROTTLE_STEP=0.09,
         NO_LINE_GRACE_FRAMES=1,
+        NO_LINE_STEERING_DECAY=0.35,
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -263,6 +270,45 @@ def test_reacquire_rejects_low_saturation_wall_fragments():
     assert confidence == 0.0
 
 
+def test_centered_strong_single_dash_can_start_after_confirmation():
+    image = np.full((120, 160, 3), 180, dtype=np.uint8)
+    yellow = bgr_from_hsv(25, 120, 230)
+    image[98:110, 76:86] = yellow
+
+    control = controller()
+    line_x, confidence, _ = confirmed_detection(control, image)
+
+    assert 78 <= line_x <= 84
+    assert confidence >= 0.20
+    assert control.selected_path_support == 1
+
+
+def test_low_saturation_leaf_path_is_not_selectable():
+    image = np.full((120, 160, 3), 180, dtype=np.uint8)
+    leaf_color = bgr_from_hsv(25, 41, 170)
+    image[98:110, 54:70] = leaf_color
+    image[72:81, 62:73] = leaf_color
+
+    line_x, confidence, _ = confirmed_detection(controller(), image)
+
+    assert line_x == 0
+    assert confidence == 0.0
+
+
+def test_sparse_leaf_shape_cannot_continue_existing_track():
+    image = np.full((120, 160, 3), 180, dtype=np.uint8)
+    yellow = bgr_from_hsv(25, 100, 220)
+    image[96:100, 50:70] = yellow
+    image[100:110, 50:54] = yellow
+    control = controller()
+    control.previous_line_x = 57.0
+
+    line_x, confidence, _ = control.get_i_color(image)
+
+    assert line_x == 0
+    assert confidence == 0.0
+
+
 def test_far_edge_needs_three_connected_tape_pieces_to_reacquire():
     yellow = bgr_from_hsv(25, 120, 230)
     two_piece = np.full((120, 160, 3), 180, dtype=np.uint8)
@@ -368,12 +414,19 @@ def test_one_missed_frame_keeps_drivable_curve_throttle():
     for _index in range(15):
         control.run(line)
     assert control.throttle >= 0.265
+    control.steering = -0.47
 
     blank = np.full((120, 160, 3), 180, dtype=np.uint8)
-    _steering, throttle, _ = control.run(blank)
+    steering, throttle, _ = control.run(blank)
 
     assert control.no_line_count == 1
     assert throttle == control.throttle_curve
+    assert -0.17 <= steering <= -0.16
+
+    steering, throttle, _ = control.run(blank)
+    assert control.no_line_count == 2
+    assert 0.11 <= throttle <= 0.13
+    assert -0.06 <= steering <= -0.05
 
 
 def test_stopped_car_needs_three_consistent_frames_to_restart():
