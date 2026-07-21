@@ -39,6 +39,10 @@ def make_cfg(**overrides):
         COLOR_DOMINANCE_MODE="YELLOW",
         COLOR_MIN_DOMINANCE=8,
         COLOR_MAX_CHANNEL_DIFF=30,
+        ADAPTIVE_SATURATION_MASK_ENABLED=True,
+        ADAPTIVE_SATURATION_PERCENTILE=50,
+        ADAPTIVE_SATURATION_MARGIN=12,
+        ADAPTIVE_SATURATION_MAX=80,
         TARGET_PIXEL=None,
         TARGET_THRESHOLD=10,
         CONFIDENCE_THRESHOLD=0.05,
@@ -136,6 +140,67 @@ def confirmed_detection(control, image):
     for _index in range(control.reacquire_confirm_frames):
         result = control.get_i_color(image)
     return result
+
+
+def night_road_with_tape():
+    road = bgr_from_hsv(25, 58, 100)
+    tape = bgr_from_hsv(25, 105, 150)
+    image = np.empty((120, 160, 3), dtype=np.uint8)
+    image[:] = road
+    image[102:114, 76:90] = tape
+    image[82:92, 77:88] = tape
+    image[62:71, 79:87] = tape
+    return image
+
+
+def test_adaptive_saturation_separates_tape_from_yellow_brown_night_road():
+    image = night_road_with_tape()
+
+    fixed_control = controller(make_cfg(
+        ADAPTIVE_SATURATION_MASK_ENABLED=False
+    ))
+    fixed_x, fixed_confidence, _ = confirmed_detection(
+        fixed_control, image
+    )
+    assert fixed_x == 0
+    assert fixed_confidence == 0.0
+
+    adaptive_control = controller()
+    line_x, confidence, _ = confirmed_detection(adaptive_control, image)
+
+    assert 80 <= line_x <= 84
+    assert confidence >= 0.20
+    assert adaptive_control.selected_path_support >= 2
+    assert 69 <= adaptive_control.adaptive_saturation_threshold <= 72
+
+
+def test_adaptive_saturation_rejects_night_road_without_tape():
+    road = bgr_from_hsv(25, 58, 100)
+    image = np.empty((120, 160, 3), dtype=np.uint8)
+    image[:] = road
+
+    line_x, confidence, _ = confirmed_detection(controller(), image)
+
+    assert line_x == 0
+    assert confidence == 0.0
+
+
+def test_line_detection_scales_to_426_by_240_camera_output():
+    image = cv2.resize(
+        night_road_with_tape(), (426, 240), interpolation=cv2.INTER_NEAREST
+    )
+    control = controller(make_cfg(
+        IMAGE_W=426,
+        IMAGE_H=240,
+        CV_REFERENCE_IMAGE_W=160,
+        CV_REFERENCE_IMAGE_H=120,
+    ))
+
+    line_x, confidence, _ = confirmed_detection(control, image)
+
+    assert 210 <= line_x <= 225
+    assert confidence >= 0.20
+    assert control.selected_path_support >= 2
 
 
 def test_prefers_deeper_curve_dash_over_centered_far_dash():

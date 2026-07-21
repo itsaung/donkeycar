@@ -54,12 +54,20 @@ class OakD(object):
 
         self.width = width
         self.height = height
+        # Compatibility aliases used by older downstream Oak-D patches.
+        self.image_w = width
+        self.image_h = height
 
-        # TODO: Accommodate using device native resolutions to avoid resizing.
-        self.resize = (width != WIDTH) or (height != HEIGHT)
-        if self.resize:
+        # RGB preview is produced at the requested size on the OAK-D. Depth
+        # remains 640x480 and is resized on the host only when enabled.
+        self.resize_depth = self.enable_depth and (
+            width != WIDTH or height != HEIGHT
+        )
+        self.resize = self.resize_depth
+        if self.resize_depth:
             print(
-                f"The output images will be resized from {(WIDTH, HEIGHT)} to {(self.width, self.height)} using OpenCV. Device resolution in use is 640x480."
+                f"Depth images will be resized from {(WIDTH, HEIGHT)} to "
+                f"{(self.width, self.height)} using OpenCV."
             )
 
         self.pipeline = None
@@ -72,7 +80,7 @@ class OakD(object):
                 self.setup_depth_camera(WIDTH, HEIGHT)
 
             if self.enable_rgb:
-                self.setup_rgb_camera(WIDTH, HEIGHT)
+                self.setup_rgb_camera(self.width, self.height)
 
             self.oak_d_device = depthai.Device(self.pipeline, device_info)
 
@@ -138,14 +146,15 @@ class OakD(object):
         res = depthai.ColorCameraProperties.SensorResolution.THE_1080_P
 
         cam_rgb.setResolution(res)
-        # Set preview size to match model input
-        cam_rgb.setPreviewSize(self.image_w, self.image_h)
+        # Produce the configured size on-device to reduce USB bandwidth and
+        # avoid transferring a 1080p frame only to resize it on the Pi.
+        cam_rgb.setPreviewSize(width, height)
         cam_rgb.setInterleaved(False)
 
         xout_rgb = self.pipeline.create(depthai.node.XLinkOut)
         xout_rgb.setStreamName("rgb")
 
-        cam_rgb.video.link(xout_rgb.input)
+        cam_rgb.preview.link(xout_rgb.input)
 
     def get_mono_camera(self, pipeline: Pipeline, is_left: bool):
         # Configure mono camera
@@ -189,39 +198,22 @@ class OakD(object):
         #
         # convert camera frames to images
         #
-        if self.enable_rgb or self.enable_depth:
-
+        if self.enable_depth:
             self.depth_queue: DataOutputQueue = self.oak_d_device.getOutputQueue(
                 name="depth", maxSize=1, blocking=False
             )
+            self.depth_image = self.get_frame(self.depth_queue)
+
+        if self.enable_rgb:
             self.rgb_queue: DataOutputQueue = self.oak_d_device.getOutputQueue(
                 "rgb", maxSize=1, blocking=False
             )
+            self.color_image = self.get_frame(self.rgb_queue)
 
-            depth_frame = self.get_frame(self.depth_queue)
-            rgb_frame = self.get_frame(self.rgb_queue)
-
-            self.depth_image = depth_frame
-            self.color_image = rgb_frame
-
-        if self.resize:
-            if self.width != WIDTH or self.height != HEIGHT:
-                import cv2
-
-                self.color_image = (
-                    cv2.resize(
-                        self.color_image, (self.width, self.height), cv2.INTER_NEAREST
-                    )
-                    if self.enable_rgb
-                    else None
-                )
-                self.depth_image = (
-                    cv2.resize(
-                        self.depth_image, (self.width, self.height), cv2.INTER_NEAREST
-                    )
-                    if self.enable_depth
-                    else None
-                )
+        if self.resize_depth:
+            self.depth_image = cv2.resize(
+                self.depth_image, (self.width, self.height), cv2.INTER_NEAREST
+            )
 
     def update(self):
         """

@@ -10,7 +10,9 @@ DonkeyCar. It does not replace the team's shared `myconfig.py`,
   successful physical-car test on July 17, 2026. On July 20, its personal
   launcher was updated to isolate stable DonkeyCar 5.3.0, and its controller
   received the leaf-safe, adaptive day/night, sharp-curve, and curve-speed
-  updates described below. The latest version passed recorded-frame replay,
+  updates described below. The July 21 version also separates yellow tape
+  from yellow-brown pavement under artificial light and uses a 426x240 OAK-D
+  stream for this non-deep-learning controller. It passed recorded-frame replay,
   synthetic regression tests, and live OAK-D processing with a mock
   drivetrain. It still requires a controlled physical pass after the latest
   speed change before being labelled fully track-validated.
@@ -35,6 +37,10 @@ The preserved configuration includes:
 - smoothed line position and safe stopping after three missed frames
 - multi-piece path fitting so isolated leaves and painted patches do not win
 - relative illumination-change detection without changing the night HSV range
+- scan-band adaptive saturation masking that separates night pavement from
+  the more saturated yellow tape before connected-component analysis
+- 426x240 OAK-D RGB preview for the classical-CV controller, while retaining
+  the original 160x120 calibration coordinate system for threshold scaling
 - gradual acceleration to 0.27 on straights and early braking toward 0.21 on
   curves, using both steering demand and the fitted tape-path slope
 - stricter three-frame, saturation, and path-support checks only when
@@ -68,7 +74,7 @@ ROI. A dark-to-light or light-to-dark transition stops throttle and steering
 for a short exposure-recovery window instead of steering toward a transient
 false candidate. It is not a daylight-only brightness threshold.
 
-Twenty-five controller and launcher tests pass, including stable day/night detection,
+Twenty-eight controller and launcher tests pass, including stable day/night detection,
 leaf and painted-patch rejection, illumination-transition stopping, sharp
 curve motion, edge reacquisition, curve-aware braking, safe stopping, and
 bounded diagnostic capture. Live OAK-D
@@ -217,17 +223,58 @@ timer reset on a new frame, and the stale-frame stop. A motor-free live OAK-D
 test armed the watchdog at frame 3 and processed 120 vehicle loops in 5.96
 seconds without a false stop.
 
+## July 21 artificial-light and 426x240 camera update
+
+The evening recording showed a different failure from the earlier leaf and
+blue-paint cases. Under the courtyard lights, the brown-gray pavement moved
+inside the broad yellow HSV range. The road and the real tape then became one
+very wide connected component. Width filtering correctly rejected that large
+component, but because the tape was already merged into it, no tape candidate
+remained and the car stayed stopped with `CONF=0`.
+
+The mask now estimates the median saturation of every road scan band and
+raises that band's minimum saturation by a bounded margin. At night the
+effective mask threshold was typically 73-80, which removed the pavement
+while retaining tape with roughly 94-127 mean saturation. In daylight the
+same calculation naturally fell to roughly 20-31. This is one adaptive
+day/night controller; it does not require separate afternoon and evening
+configuration files.
+
+Replaying all 22 readable evening samples at the requested 426x240 output
+found the center tape after normal reacquisition confirmation and tracked it
+through the remaining samples, including the motion-blurred frame. The saved
+daylight leaf frames remained rejected, history-aware edge recovery still
+selected the real tape, and the documented daylight edge tape remained
+detectable. A synthetic 426x240 scaling regression was added as the 25th
+controller test; the three launcher watchdog tests bring the total to 28.
+
+For the non-deep-learning line follower, `IMAGE_W=426` and `IMAGE_H=240`.
+`CV_REFERENCE_IMAGE_W=160` and `CV_REFERENCE_IMAGE_H=120` preserve all of the
+existing scan, jump, and tape-size calibration by scaling it at runtime. The
+OAK-D part now receives `IMAGE_W` and `IMAGE_H` from the vehicle template and
+uses its on-device RGB preview output, avoiding transfer of a much larger ISP
+frame merely to resize it on the Raspberry Pi. If a separate deep-learning
+pipeline is introduced, its model input should be configured independently at
+384x216 rather than changing this classical-CV controller's reference grid.
+
+A motor-free hardware check returned eight distinct OAK-D frames, each with
+shape `(240, 426, 3)`. The full launcher then completed 120 loops at 20 Hz with
+a MOCK drivetrain; the camera watchdog armed at frame 2, the line follower
+averaged 9.70 ms (12.94 ms maximum), and no stale-camera stop occurred.
+
 ## Restore the vehicle-tested files to the Raspberry Pi
 
 Back up any existing personal files first, then copy the three files from
-`vehicle_tested/` into `/home/pi/mycar`. These filenames are intentionally
-Sungsan-specific so the team files remain untouched.
+`vehicle_tested/` into `/home/sungsan/mycar`. The OAK-D resolution update also
+requires the corresponding `donkeycar/parts/oak_d.py` and
+`donkeycar/templates/complete.py` changes from this branch. The dedicated
+Sungsan account is now the deployment target.
 
 Run from the Raspberry Pi with:
 
 ```bash
-cd /home/pi/mycar
-source /home/pi/env/bin/activate
+cd /home/sungsan/mycar
+source /home/sungsan/env/bin/activate
 python line_following_drive_sungsan.py drive \
   --myconfig=myconfig_line_following_sungsan.py \
   --log=INFO
@@ -262,7 +309,7 @@ Each session creates:
 The configured output root is:
 
 ```text
-/home/pi/mycar/data_line_following_sungsan/debug_captures
+/home/sungsan/mycar/data_line_following_sungsan/debug_captures
 ```
 
 Run its portable unit tests from this directory with:

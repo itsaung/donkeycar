@@ -37,8 +37,11 @@ MAX_LOOPS = None        # None = run until Ctrl+C; set a number to auto-stop aft
 
 # ── Camera ───────────────────────────────────────────────────────────
 CAMERA_TYPE = "OAKD"   # Use the Oak-D Lite via DepthAI
-IMAGE_W = 160
-IMAGE_H = 120
+# This controller is classical CV, not a deep-learning model, so use the
+# requested non-DL 16:9 stream. Deep-learning model input should be configured
+# separately at 384x216 when that pipeline is used.
+IMAGE_W = 426
+IMAGE_H = 240
 IMAGE_DEPTH = 3         # 3 = RGB color; set to 1 for grayscale
 CAMERA_FRAMERATE = DRIVE_LOOP_HZ
 CAMERA_VFLIP = False    # Set True if the camera image appears upside down
@@ -931,11 +934,13 @@ LANE_SIDE = "left"  # "left" | "right"
 
 LANE_FOLLOW_DEBUG = True
 LANE_FOLLOW_LOG_EVERY_N = 5
-LANE_FOLLOW_LOG_PATH = "/home/pi/mycar/logs/lane_follow.log"
+LANE_FOLLOW_LOG_PATH = "/home/sungsan/mycar/logs/lane_follow.log"
 LANE_FOLLOW_FORCE_LOCAL = True
 LANE_FOLLOW_USE_JOYSTICK = False
 
 SCAN_Y = 70
+CV_REFERENCE_IMAGE_W = 160
+CV_REFERENCE_IMAGE_H = 120
 SCAN_HEIGHT = 28
 
 # "color" = HSV dual-line midpoint (recommended after calibration)
@@ -990,7 +995,7 @@ OVERLAY_IMAGE = True
 # illumination changes are also captured immediately. Each run is capped.
 CV_DEBUG_CAPTURE = True
 CV_DEBUG_CAPTURE_DIR = (
-    "/home/pi/mycar/data_line_following_sungsan/debug_captures"
+    "/home/sungsan/mycar/data_line_following_sungsan/debug_captures"
 )
 CV_DEBUG_CAPTURE_EVERY_N_FRAMES = 40
 CV_DEBUG_CAPTURE_SAVE_OVERLAY = True
@@ -1011,7 +1016,7 @@ DEC_PID_P_BTN = "L2"
 # ==============================================================================
 
 WEB_CONTROL_PORT = 8892
-DATA_PATH = "/home/pi/mycar/data_line_following_sungsan"
+DATA_PATH = "/home/sungsan/mycar/data_line_following_sungsan"
 AUTO_CREATE_NEW_TUB = True
 
 CV_CONTROLLER_MODULE = "line_following_controller_sungsan"
@@ -1020,8 +1025,11 @@ CV_CONTROLLER_INPUTS = ['cam/image_array']
 CV_CONTROLLER_OUTPUTS = ['pilot/steering', 'pilot/throttle', 'cv/image_array']
 CV_CONTROLLER_CONDITION = "run_pilot"
 
-# Geometry is defined at the 160x120 reference resolution. The personal
-# controller scales it to the OAK-D runtime frame (currently about 702x520).
+# Geometry remains calibrated at the original 160x120 reference resolution.
+# The controller scales it independently in X and Y to the 426x240 OAK-D
+# stream, so existing scan and component thresholds keep the same meaning.
+CV_REFERENCE_IMAGE_W = 160
+CV_REFERENCE_IMAGE_H = 120
 SCAN_Y = 70
 SCAN_HEIGHT = 28
 SCAN_EXTRA_ROWS = 1
@@ -1036,6 +1044,15 @@ COLOR_THRESHOLD_HIGH_2 = None
 COLOR_DOMINANCE_MODE = "YELLOW"
 COLOR_MIN_DOMINANCE = 8
 COLOR_MAX_CHANNEL_DIFF = 30
+
+# Adapt the mask to the road colour in each scan band. Artificial lighting can
+# move the brown pavement itself into the broad yellow HSV range; requiring
+# saturation above the local road median separates the brighter yellow tape
+# without introducing separate afternoon and evening profiles.
+ADAPTIVE_SATURATION_MASK_ENABLED = True
+ADAPTIVE_SATURATION_PERCENTILE = 50
+ADAPTIVE_SATURATION_MARGIN = 12
+ADAPTIVE_SATURATION_MAX = 80
 
 TARGET_PIXEL = None
 TARGET_THRESHOLD = 10

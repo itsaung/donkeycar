@@ -21,9 +21,9 @@ import time
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _ORIGINAL_SYS_PATH = list(sys.path)
 
-# `/home/pi/mycar` may contain a development checkout named `donkeycar`.
+# `/home/sungsan/mycar` may contain a development checkout named `donkeycar`.
 # Temporarily remove the script directory so this personal launcher uses the
-# stable package installed in `/home/pi/env`, then restore it so the personal
+# stable package installed in `/home/sungsan/env`, then restore it so the personal
 # line-following controller can still be imported from the mycar directory.
 try:
     sys.path[:] = [

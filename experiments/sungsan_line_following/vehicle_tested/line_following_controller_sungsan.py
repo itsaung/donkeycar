@@ -26,8 +26,12 @@ class LineFollower:
         self.scan_y = cfg.SCAN_Y
         self.scan_height = cfg.SCAN_HEIGHT
         self.scan_extra_rows = int(getattr(cfg, 'SCAN_EXTRA_ROWS', 0))
-        self.ref_image_w = getattr(cfg, 'IMAGE_W', None)
-        self.ref_image_h = getattr(cfg, 'IMAGE_H', None)
+        self.ref_image_w = getattr(
+            cfg, 'CV_REFERENCE_IMAGE_W', getattr(cfg, 'IMAGE_W', None)
+        )
+        self.ref_image_h = getattr(
+            cfg, 'CV_REFERENCE_IMAGE_H', getattr(cfg, 'IMAGE_H', None)
+        )
         self.input_color_order = str(getattr(
             cfg, 'CV_INPUT_COLOR_ORDER', 'RGB'
         )).upper()
@@ -64,6 +68,22 @@ class LineFollower:
         self.color_max_channel_diff = int(getattr(
             cfg, 'COLOR_MAX_CHANNEL_DIFF', 255
         ))
+        self.adaptive_saturation_enabled = bool(getattr(
+            cfg, 'ADAPTIVE_SATURATION_MASK_ENABLED', False
+        ))
+        self.adaptive_saturation_percentile = float(np.clip(getattr(
+            cfg, 'ADAPTIVE_SATURATION_PERCENTILE', 50.0
+        ), 0.0, 100.0))
+        self.adaptive_saturation_margin = max(0.0, float(getattr(
+            cfg, 'ADAPTIVE_SATURATION_MARGIN', 0.0
+        )))
+        self.adaptive_saturation_max = float(np.clip(getattr(
+            cfg, 'ADAPTIVE_SATURATION_MAX', 255.0
+        ), 0.0, 255.0))
+        self.adaptive_saturation_threshold = float(min(
+            int(low[1]) for low, _high in self.color_ranges
+        ))
+        self._adaptive_saturation_samples = []
 
         self.target_pixel_cfg = cfg.TARGET_PIXEL
         self.target_pixel = None
@@ -350,6 +370,13 @@ class LineFollower:
                     [low.tolist(), high.tolist()]
                     for low, high in self.color_ranges
                 ],
+                'adaptive_saturation_mask_enabled':
+                    self.adaptive_saturation_enabled,
+                'adaptive_saturation_percentile':
+                    self.adaptive_saturation_percentile,
+                'adaptive_saturation_margin':
+                    self.adaptive_saturation_margin,
+                'adaptive_saturation_max': self.adaptive_saturation_max,
                 'path_min_components': self.path_min_components,
                 'path_max_slope': self.path_max_slope,
                 'track_min_saturation': self.track_min_saturation,
@@ -503,6 +530,8 @@ class LineFollower:
                 'selected_saturation': self.selected_saturation,
                 'selected_fill_ratio': self.selected_fill_ratio,
                 'selected_tape_quality': self.selected_tape_quality,
+                'adaptive_saturation_threshold':
+                    self.adaptive_saturation_threshold,
                 'curve_strength': self.curve_strength,
                 'desired_throttle': self.desired_throttle,
                 'scene_brightness': self.scene_brightness,
@@ -573,9 +602,31 @@ class LineFollower:
         else:
             hsv = cv2.cvtColor(band_img, cv2.COLOR_RGB2HSV)
             red, green, blue = cv2.split(band_img)
+        adaptive_min_saturation = None
+        if self.adaptive_saturation_enabled:
+            road_saturation = float(np.percentile(
+                hsv[:, :, 1], self.adaptive_saturation_percentile
+            ))
+            adaptive_min_saturation = int(round(np.clip(
+                road_saturation + self.adaptive_saturation_margin,
+                0.0,
+                self.adaptive_saturation_max,
+            )))
+            self._adaptive_saturation_samples.append(
+                adaptive_min_saturation
+            )
+
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
         for low, high in self.color_ranges:
-            mask = cv2.bitwise_or(mask, cv2.inRange(hsv, low, high))
+            effective_low = low
+            if adaptive_min_saturation is not None:
+                effective_low = low.copy()
+                effective_low[1] = max(
+                    int(low[1]), adaptive_min_saturation
+                )
+            mask = cv2.bitwise_or(
+                mask, cv2.inRange(hsv, effective_low, high)
+            )
 
         if self.color_dominance_mode == 'YELLOW':
             red_i = red.astype(np.int16)
@@ -915,6 +966,7 @@ class LineFollower:
         self.target_pixel = target
 
         scan_positions = self._scan_positions(height, y0, band_h)
+        self._adaptive_saturation_samples = []
         roi_y0 = min(scan_positions)
         roi_y1 = min(height, max(y + band_h for y in scan_positions))
         roi_img = cam_img[roi_y0:roi_y1, :, :]
@@ -928,6 +980,10 @@ class LineFollower:
             roi_mask[offset:offset + band_h] = cv2.bitwise_or(
                 roi_mask[offset:offset + band_h], band_mask
             )
+        if self._adaptive_saturation_samples:
+            self.adaptive_saturation_threshold = float(np.median(
+                self._adaptive_saturation_samples
+            ))
 
         candidates = self._component_candidates(
             roi_mask, roi_img, roi_y0, height, width
@@ -1219,6 +1275,9 @@ class LineFollower:
                 self.selected_saturation or 0.0,
                 self.selected_fill_ratio or 0.0,
                 self.selected_tape_quality or 0.0,
+            ),
+            "MASK SAT:{:.0f}".format(
+                self.adaptive_saturation_threshold
             ),
             "LIGHT:{:.0f} DELTA:{:.0f} HOLD:{:d}".format(
                 self.scene_brightness or 0.0,
