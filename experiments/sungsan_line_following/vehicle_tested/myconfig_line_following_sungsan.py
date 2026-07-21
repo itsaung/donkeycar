@@ -1134,6 +1134,13 @@ NO_LINE_GRACE_FRAMES = 1
 # previous -0.47 command to about -0.16 and then -0.06 before the full stop.
 NO_LINE_STEERING_DECAY = 0.35
 
+# The stock threaded OAK-D reader can keep returning its last image if the
+# DepthAI/USB stream blocks. Stop the drivetrain and exit instead of driving
+# from a frozen frame. At 20 Hz, 0.5 seconds represents about ten missed loops.
+CAMERA_FRAME_WATCHDOG_ENABLED = True
+CAMERA_FRAME_WATCHDOG_TIMEOUT_SECONDS = 0.5
+CAMERA_FRAME_WATCHDOG_STARTUP_TIMEOUT_SECONDS = 5.0
+
 PID_P = -0.01
 PID_I = 0.0
 PID_D = -0.0001

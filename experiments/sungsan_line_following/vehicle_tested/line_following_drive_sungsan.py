@@ -16,6 +16,7 @@ Options:
 import logging
 from pathlib import Path
 import sys
+import time
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 _ORIGINAL_SYS_PATH = list(sys.path)
@@ -61,6 +62,98 @@ logging.basicConfig(level=logging.INFO)
 logger.info("Using isolated DonkeyCar package: %s", _DONKEYCAR_SOURCE)
 
 
+class CameraFrameWatchdog:
+    """Stop the vehicle if a threaded camera stops producing new frames."""
+
+    def __init__(
+            self, camera, vehicle, timeout_seconds=0.5,
+            startup_timeout_seconds=5.0, time_fn=time.monotonic):
+        self.camera = camera
+        self.vehicle = vehicle
+        self.timeout_seconds = max(0.05, float(timeout_seconds))
+        self.startup_timeout_seconds = max(
+            self.timeout_seconds, float(startup_timeout_seconds)
+        )
+        self.time_fn = time_fn
+        now = self.time_fn()
+        self.started_at = now
+        self.last_change_at = now
+        self.last_frame_count = getattr(camera, 'frame_count', None)
+        self.received_frame = False
+        self.triggered = False
+
+    @staticmethod
+    def _annotate(image, message):
+        if image is None:
+            return None
+        try:
+            import cv2
+
+            annotated = image.copy()
+            cv2.rectangle(
+                annotated, (0, 0), (annotated.shape[1], 46),
+                (0, 0, 180), -1
+            )
+            cv2.putText(
+                annotated, message, (12, 31), cv2.FONT_HERSHEY_SIMPLEX,
+                0.75, (255, 255, 255), 2, cv2.LINE_AA
+            )
+            return annotated
+        except Exception:
+            logger.exception("Could not annotate camera watchdog image")
+            return image
+
+    def _stop(self, image, reason):
+        if not self.triggered:
+            logger.error(
+                "CAMERA WATCHDOG STOP: %s. Steering and throttle forced to "
+                "zero; restart the drive command after checking OAK-D/USB.",
+                reason,
+            )
+        self.triggered = True
+        self.vehicle.on = False
+        return 0.0, 0.0, self._annotate(
+            image, "CAMERA STALE - MOTOR STOP"
+        )
+
+    def run(self, steering, throttle, image):
+        now = self.time_fn()
+        frame_count = getattr(self.camera, 'frame_count', None)
+        camera_image = getattr(self.camera, 'color_image', None)
+
+        if frame_count != self.last_frame_count:
+            self.last_frame_count = frame_count
+            self.last_change_at = now
+            if camera_image is not None:
+                if not self.received_frame:
+                    logger.info(
+                        "Camera watchdog armed at frame %s", frame_count
+                    )
+                self.received_frame = True
+
+        if not self.received_frame:
+            waiting_for = now - self.started_at
+            if waiting_for >= self.startup_timeout_seconds:
+                return self._stop(
+                    image,
+                    "no initial frame for {:.2f}s".format(waiting_for),
+                )
+            return 0.0, 0.0, self._annotate(
+                image, "WAITING FOR CAMERA"
+            )
+
+        stale_for = now - self.last_change_at
+        if stale_for >= self.timeout_seconds:
+            return self._stop(
+                image,
+                "frame counter {} unchanged for {:.2f}s".format(
+                    frame_count, stale_for
+                ),
+            )
+
+        return steering, throttle, image
+
+
 def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
     '''
     Construct a working robotic vehicle from many parts.
@@ -83,7 +176,23 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
     #
     # setup primary camera
     #
+    camera_part_start = len(V.parts)
     add_camera(V, cfg, camera_type)
+    camera_part = next(
+        (
+            entry['part'] for entry in V.parts[camera_part_start:]
+            if hasattr(entry['part'], 'frame_count')
+        ),
+        None,
+    )
+    camera_watchdog_enabled = bool(getattr(
+        cfg, 'CAMERA_FRAME_WATCHDOG_ENABLED', False
+    ))
+    if camera_watchdog_enabled and camera_part is None:
+        raise RuntimeError(
+            "Camera watchdog is enabled but the camera does not expose "
+            "frame_count"
+        )
 
     #
     # add the user input controller(s)
@@ -193,6 +302,24 @@ def drive(cfg, use_joystick=False, camera_type='single', meta=[]):
           inputs=['user/mode', 'user/steering', 'user/throttle',
                   'pilot/steering', 'pilot/throttle'],
           outputs=['steering', 'throttle'])
+
+    # The stock threaded OAK-D part returns its last image if its DepthAI
+    # queue blocks. Never let that stale image keep an old motor command alive.
+    if camera_watchdog_enabled:
+        V.add(
+            CameraFrameWatchdog(
+                camera_part,
+                V,
+                timeout_seconds=getattr(
+                    cfg, 'CAMERA_FRAME_WATCHDOG_TIMEOUT_SECONDS', 0.5
+                ),
+                startup_timeout_seconds=getattr(
+                    cfg, 'CAMERA_FRAME_WATCHDOG_STARTUP_TIMEOUT_SECONDS', 5.0
+                ),
+            ),
+            inputs=['steering', 'throttle', 'cv/image_array'],
+            outputs=['steering', 'throttle', 'cv/image_array'],
+        )
 
 
     #

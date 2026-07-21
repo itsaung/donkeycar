@@ -68,7 +68,7 @@ ROI. A dark-to-light or light-to-dark transition stops throttle and steering
 for a short exposure-recovery window instead of steering toward a transient
 false candidate. It is not a daylight-only brightness threshold.
 
-Twenty-two synthetic-image tests pass, including stable day/night detection,
+Twenty-five controller and launcher tests pass, including stable day/night detection,
 leaf and painted-patch rejection, illumination-transition stopping, sharp
 curve motion, edge reacquisition, curve-aware braking, safe stopping, and
 bounded diagnostic capture. Live OAK-D
@@ -194,6 +194,28 @@ documented leaf clusters, chooses the actual yellow edge tape at x=644 instead
 of left-side vegetation, and safely rejects the ambiguous blue-rectangle
 approach frame. The previously fixed sharp curve at x=413 and history-aware
 two-piece edge recovery at x=580 still pass.
+
+## July 20 frozen-camera watchdog update
+
+One evening run kept displaying the same frame while the Python process stayed
+alive. Diagnostic capture stopped at frame 240 at 20:03:28, and the OAK-D
+background thread stopped advancing even though the 20 Hz vehicle loop and web
+server continued. The stock threaded OAK-D interface returns its last image
+when no new frame is available, so the old overlay still showed throttle 0.27.
+This was a DepthAI/USB frame-stream stall, not a yellow-line threshold failure.
+
+The personal launcher now watches the OAK-D `frame_count` after `DriveMode` and
+before the drivetrain. Commands remain at zero while the camera is starting.
+After the first valid frame, if the counter is unchanged for 0.5 seconds, the
+watchdog forces both steering and throttle to zero, marks the displayed image
+as `CAMERA STALE - MOTOR STOP`, and ends the vehicle loop so normal part
+shutdown can release the camera. A five-second startup timeout handles a
+camera that never produces its first frame.
+
+Three launcher tests verify startup blocking, normal command pass-through,
+timer reset on a new frame, and the stale-frame stop. A motor-free live OAK-D
+test armed the watchdog at frame 3 and processed 120 vehicle loops in 5.96
+seconds without a false stop.
 
 ## Restore the vehicle-tested files to the Raspberry Pi
 
